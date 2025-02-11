@@ -2,10 +2,10 @@ import re
 from cot_refactored import MathProblemSolver
 from datasets import load_dataset
 import random
+import json
 from tqdm import tqdm
 
 model_name = "meta-llama/Meta-Llama-3.1-8B-Instruct"
-
 
 # Function to load and preprocess datasets
 def load_and_preprocess_datasets(dataset_name):
@@ -28,6 +28,16 @@ def load_and_preprocess_datasets(dataset_name):
     else:
         raise ValueError(f"Dataset '{dataset_name}' is not supported.")
 
+# Function to save the sampled dataset to a file
+def save_sampled_dataset(sampled_dataset, filename="sampled_dataset.json"):
+    with open(filename, "w") as f:
+        json.dump(sampled_dataset, f)
+    print(f"Sampled dataset saved to {filename}")
+
+# Function to load the sampled dataset from a file
+def load_sampled_dataset(filename="sampled_dataset.json"):
+    with open(filename, "r") as f:
+        return json.load(f)
 
 def extract_final_value_from_ground_truth(solution):
     """
@@ -55,7 +65,6 @@ def extract_numeric_value(text):
         str: A string containing only numeric characters.
     """
     return re.sub(r"[^\d]", "", text)
-    
 
 # Main evaluation script
 if __name__ == "__main__":
@@ -125,89 +134,88 @@ Finally, calculate how much more Betty needs by subtracting the total money she 
     # Number of samples to evaluate
     num_samples = 200
 
-    # Evaluate on each dataset
-    for dataset_name in datasets:
-        print(f"Evaluating on {dataset_name}...")
-
+    # Check if the sampled dataset already exists
+    try:
+        sampled_dataset = load_sampled_dataset()
+        print("Loaded previously sampled dataset.")
+    except FileNotFoundError:
+        print("Sampled dataset not found, generating a new one.")
+        
         # Load and preprocess dataset
-        dataset = load_and_preprocess_datasets(dataset_name)
+        dataset = load_and_preprocess_datasets("gsm8k")
 
         # Ensure the dataset has enough samples
         total_problems = len(dataset)
         if total_problems < num_samples:
-            print(f"Dataset {dataset_name} contains only {total_problems} problems, which is less than the requested {num_samples} samples.")
-            continue
+            print(f"Dataset contains only {total_problems} problems, which is less than the requested {num_samples} samples.")
+        else:
+            sampled_dataset = random.sample(dataset, num_samples)
+            save_sampled_dataset(sampled_dataset)
 
-        # Randomly sample 200 problems from the dataset
-        sampled_dataset = random.sample(dataset, num_samples)
+    correct = 0
+    count = 0
+    cor_to_cor = 0
+    wro_to_cor = 0
 
-        correct = 0
-        count = 0
-        cor_to_cor = 0
-        wro_to_cor = 0
+    cor_to_wro = 0
+    wro_to_wro1 = 0
+    wro_to_wro2 = 0
 
-        cor_to_wro = 0
-        wro_to_wro1 = 0
-        wro_to_wro2 = 0
+    # Initialize tqdm for progress bar
+    for data in tqdm(sampled_dataset, desc="Processing problems", total=num_samples):
+        problem = data["problem"]
+        ground_truth = data["solution"]
 
-        # Initialize tqdm for progress bar
-        for data in tqdm(sampled_dataset, desc="Processing problems", total=num_samples):
-            problem = data["problem"]
-            ground_truth = data["solution"]
+        # Generate solution using the model
+        generated_solution = solver.solve_problem(problem, few_shot_examples_GSM8K)
+        formatted_initial_answer = extract_numeric_value(generated_solution[0])
+        formatted_answer = extract_numeric_value(generated_solution[1])
 
-            # Generate solution using the model
-            generated_solution = solver.solve_problem(problem, few_shot_examples_GSM8K)
-            formatted_initial_answer = extract_numeric_value(generated_solution[0])
-            formatted_answer = extract_numeric_value(generated_solution[1])
+        # Extract the value after #### from the ground truth
+        ground_truth_value = extract_numeric_value(extract_final_value_from_ground_truth(ground_truth))
 
-            # Extract the value after #### from the ground truth
-            ground_truth_value = extract_numeric_value(extract_final_value_from_ground_truth(ground_truth))
-
-
-
-
-            # Check if ground_truth_value is inside generated_solution
-            if ground_truth_value in formatted_answer or formatted_answer in ground_truth_value:
-                correct += 1
-                if formatted_initial_answer == formatted_answer:
-                    cor_to_cor += 1
-                else:
-                    wro_to_cor += 1
+        # Check if ground_truth_value is inside generated_solution
+        if ground_truth_value in formatted_answer or formatted_answer in ground_truth_value:
+            correct += 1
+            if formatted_initial_answer == formatted_answer:
+                cor_to_cor += 1
             else:
-                if formatted_initial_answer in ground_truth_value or ground_truth_value in formatted_initial_answer:
-                    cor_to_wro += 1
-                    print("cor_to_wro")
-                elif formatted_initial_answer == formatted_answer:
-                    wro_to_wro1 += 1
-                    print("wro_to_wro1")
-                else:
-                    wro_to_wro2 += 1
-                    print("wro_to_wro2")
-                print(f"Problem: {problem}")
-                print(f"Initial Answer: {generated_solution[0]}")
-                print(f"Generated Solution: {formatted_answer}")
-                print(f"Ground Truth: {ground_truth_value}")
-                print("--------------------")
+                wro_to_cor += 1
+        else:
+            if formatted_initial_answer in ground_truth_value or ground_truth_value in formatted_initial_answer:
+                cor_to_wro += 1
+                print("cor_to_wro")
+            elif formatted_initial_answer == formatted_answer:
+                wro_to_wro1 += 1
+                print("wro_to_wro1")
+            else:
+                wro_to_wro2 += 1
+                print("wro_to_wro2")
+            print(f"Problem: {problem}")
+            print(f"Initial Answer: {generated_solution[0]}")
+            print(f"Generated Solution: {formatted_answer}")
+            print(f"Ground Truth: {ground_truth_value}")
+            print("--------------------")
 
-            count += 1
+        count += 1
 
-            # Calculate accuracy
-            if count % 100 == 0:
-                accuracy = (correct / count) * 100
-                print("\n************************************\n")
-                print(f"Accuracy after {count} problems: {accuracy:.2f}%")
-                print("Correct to Correct: ", cor_to_cor)
-                print("Wrong to Correct: ", wro_to_cor)
-                print("Correct to Wrong: ", cor_to_wro)
-                print("Wrong to Wrong (Initial Answer == Generated Answer): ", wro_to_wro1)
-                print("Wrong to Wrong (Initial Answer != Generated Answer): ", wro_to_wro2)
-                print("\n************************************\n")
+        # Calculate accuracy
+        if count % 100 == 0:
+            accuracy = (correct / count) * 100
+            print("\n************************************\n")
+            print(f"Accuracy after {count} problems: {accuracy:.2f}%")
+            print("Correct to Correct: ", cor_to_cor)
+            print("Wrong to Correct: ", wro_to_cor)
+            print("Correct to Wrong: ", cor_to_wro)
+            print("Wrong to Wrong (Initial Answer == Generated Answer): ", wro_to_wro1)
+            print("Wrong to Wrong (Initial Answer != Generated Answer): ", wro_to_wro2)
+            print("\n************************************\n")
 
-        # Final accuracy calculation
-        accuracy = (correct / count) * 100
-        print(f"Total Accuracy on {dataset_name}: {accuracy:.2f}%")
-        print("Correct to Correct: ", cor_to_cor)
-        print("Wrong to Correct: ", wro_to_cor)
-        print("Correct to Wrong: ", cor_to_wro)
-        print("Wrong to Wrong (Initial Answer == Generated Answer): ", wro_to_wro1)
-        print("Wrong to Wrong (Initial Answer != Generated Answer): ", wro_to_wro2)
+    # Final accuracy calculation
+    accuracy = (correct / count) * 100
+    print(f"Total Accuracy: {accuracy:.2f}%")
+    print("Correct to Correct: ", cor_to_cor)
+    print("Wrong to Correct: ", wro_to_cor)
+    print("Correct to Wrong: ", cor_to_wro)
+    print("Wrong to Wrong (Initial Answer == Generated Answer): ", wro_to_wro1)
+    print("Wrong to Wrong (Initial Answer != Generated Answer): ", wro_to_wro2)
