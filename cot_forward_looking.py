@@ -5,7 +5,7 @@ import torch
 import re
 
 class MathProblemSolver:
-    def __init__(self, model_name: str, cuda_devices: str = "0,1", quantization_bits: Optional[int] = 4):
+    def __init__(self, model_name: str, cuda_devices: str = "0,1,2,3", quantization_bits: Optional[int] = 4):
         self.model_name = model_name
         self.tokenizer = None
         self.model = None
@@ -94,7 +94,7 @@ class MathProblemSolver:
         problem_initial_prompt = [
             {
                 "role": "user",
-                "content": problem,
+                "content": "Solve this math problem step by step. Problem : \n" + problem,
             },
             {
                 "role": "assistant",
@@ -110,23 +110,36 @@ Reasoning step-by-step:
         outputs = self.generate_output(tokenized_chat)
         result = self.decode_output(outputs, False).split("<STEP><|eot_id|><|start_header_id|>assistant<|end_header_id|>")[-1]
 
-        current_step_index = 1
+        step_index = 1
+        forward_look = 0
+        intial_answer = result.split("<ANSWER>")[-1].split("</ANSWER>")[0].strip()
+        # print(f"Initial Solution: {result}")
+        # print("\n\n******************\n\n")
 
         # False -> CoT
         # current_step_index <= 5 -> 5 iter
         # current_step_index <= 10 -> 10 iter
-        while current_step_index <= 5:
+        # True -> LLM's judgement
+        while False:
+            forward_step_index = step_index + forward_look
             steps = re.findall(r"<STEP>(.*?)</STEP>", result, re.DOTALL)
-            if current_step_index > len(steps):
+            if step_index > len(steps):
                 break
 
-            current_step = steps[:current_step_index]
+            # if forward_step_index is larger than the number of steps, we give full steps. Otherwise, we give steps up to forward_step_index
+            current_step = steps[:forward_step_index] if forward_step_index <= len(steps) else steps
+
+            # --- FEEDBACK PROMPT ---
+            # Now we instruct the model: “Give feedback on the step immediately preceding the most recent step only”
             feedback_prompt = [
                 {
                     "role": "user",
-                    "content": "Feedback on the most recent step only. Go through the step thoroughly and check if there are any errors or incorrect approaches.\n\n"
-                    + "Problem: " + problem
-                    + "\n\nReasoning step-by-step:\n" + "\n".join(f"<STEP>{step}</STEP>" for step in current_step)
+                    "content": (
+                        f"Feedback on the step number {step_index} only. Go through the step thoroughly and check if there are any errors or incorrect approaches.\n\n"
+                        "Problem: " + problem + "\n\n"
+                        "Reasoning step-by-step (all steps shown):\n" +
+                        "\n".join(f"<STEP>{step}</STEP>" for step in current_step)
+                    )
                 },
                 {
                     "role": "assistant",
@@ -137,38 +150,54 @@ Reasoning step-by-step:
             feedback_tokenized_chat = self.tokenize_chat(feedback_prompt)
             feedback_output = self.generate_output(feedback_tokenized_chat)
 
-            feedback = self.decode_output(feedback_output, False).split("Feedback :<|eot_id|><|start_header_id|>assistant<|end_header_id|>")[-1].strip()
+            feedback = self.decode_output(feedback_output, False)\
+                        .split("Feedback :<|eot_id|><|start_header_id|>assistant<|end_header_id|>")[-1].strip()
+            # print(f"Feedback: {feedback}")
+            # print("\n\n******************\n\n")
 
+            # --- REFINE PROMPT ---
+            # Now instruct the model to refine the step immediately preceding the most recent step
             refine_prompt = few_shot_examples + [
                 {
                     "role": "user",
-                    "content": "Refine the most recent reasoning step only, based on the feedback provided. Ensure the logic is clear and fits with the previous steps.\n\n"
-                    + "Problem: " + problem
-                    + "\n\nReasoning step-by-step:\n" + "\n".join(f"<STEP>{step}</STEP>" for step in current_step)
-                    + "\n\nFeedback: " + feedback
+                    "content": (
+                        f"Refine the step number {step_index} only, based on the feedback provided. "
+                        "Problem: " + problem + "\n\n"
+                        "Reasoning step-by-step (excluding the most recent step):\n" +
+                        "\n".join(f"<STEP>{step}</STEP>" for step in current_step) +
+                        "\n\nFeedback: " + feedback
+                    )
                 },
                 {
                     "role": "assistant",
-                    "content": "Problem: " + problem
-                    + "\n\nReasoning step-by-step:\n" + "\n".join(f"<STEP>{step}</STEP>" for step in current_step[:-1])
-                    + "<STEP>\n"
+                    "content": (
+                        "Problem: " + problem + "\n\n"
+                        "Reasoning step-by-step:\n" +
+                        "\n".join(f"<STEP>{step}</STEP>" for step in current_step[:-forward_look - 1]) +
+                        "<STEP>\n"
+                    )
                 }
             ]
 
             refine_tokenized_chat = self.tokenize_chat(refine_prompt)
             refine_output = self.generate_output(refine_tokenized_chat)
 
-            refined_result = self.decode_output(refine_output, True).split("Reasoning step-by-step:")[-1].replace("assistant", "")
+            refined_result = self.decode_output(refine_output, False).split("<STEP><|eot_id|><|start_header_id|>assistant")[-1]
             refined_steps = re.findall(r"<STEP>(.*?)</STEP>", refined_result, re.DOTALL)
+            # print(f"Refined Steps: {refined_steps}")
+            # print("\n\n******************\n\n")
+            previous_steps = "\n".join(f"<STEP>{step}</STEP>" for step in refined_steps[:forward_step_index - 1])
 
+            # --- CONTINUATION PROMPT ---
+            # This now uses the refined steps up to current_step_index (i.e. n+1 steps)
             continuation_prompt = few_shot_examples + [
                 {
                     "role": "user",
-                    "content": problem,
+                    "content": "Follow the format of the previous solutions. Solve this math problem step by step. Problem : \n" + problem,
                 },
                 {
                     "role": "assistant",
-                    "content": "Reasoning step-by-step:\n" + "\n".join(f"<STEP>{step}</STEP>" for step in refined_steps[:current_step_index])
+                    "content": "Reasoning step-by-step:\n" + previous_steps
                     + "\n<STEP>\n"
                 }
             ]
@@ -176,78 +205,25 @@ Reasoning step-by-step:
             continuation_tokenized_chat = self.tokenize_chat(continuation_prompt)
             continuation_output = self.generate_output(continuation_tokenized_chat)
 
-            result = self.decode_output(continuation_output, True).replace("assistant", "").strip()
-            current_step_index += 1
-        return result.split("<ANSWER>")[-1].replace("</ANSWER>", "").strip()
+            continued_result = self.decode_output(continuation_output, False).split("<STEP><|eot_id|><|start_header_id|>assistant<|end_header_id|>")[-1]
+            continued_steps = re.findall(r"<STEP>(.*?)</STEP>", continued_result, re.DOTALL)
+            continued_answer = continued_result.split("<ANSWER>")[-1].split("</ANSWER>")[0].strip()
+            result = previous_steps + "\n".join(f"<STEP>{step}</STEP>" for step in continued_steps) + f"<ANSWER>{continued_answer}</ANSWER>"
+            step_index += 1
+            # print(f"Refined Solution: {result}")
+            # print("\n\n******************\n\n")
+        return [intial_answer, result.split("<ANSWER>")[-1].split("</ANSWER>")[0].strip()]
+
 
 # Usage Example
 if __name__ == "__main__":
     model_name = "meta-llama/Meta-Llama-3.1-8B-Instruct"
     solver = MathProblemSolver(model_name=model_name)
 
-    few_shot_examples_default = [
-      {
-        "role": "system",
-        "content": "You are a helpful assistant that solves math problems step by step. Follow the examples provided and solve the given problem logically. Make sure to solve it within 5 steps."
-      },
-      {
-        "role": "user",
-        "content": "Find the derivative of the function f(x) = 3x^3 - 5x^2 + 4x - 7."
-      },
-      {
-        "role": "assistant",
-        "content": """
-Reasoning step-by-step:
-<STEP>
-We begin by identifying the general rules for derivatives. For any term ax^n, the derivative is given by n * ax^(n-1).
-</STEP>
-<STEP>
-Apply the rule to the first term, 3x^3. The derivative of 3x^3 is:
-3 * 3x^2 = 9x^2.
-</STEP>
-<STEP>
-Apply the rule to the second term, -5x^2. The derivative of -5x^2 is:
-2 * (-5)x = -10x.
-</STEP>
-<STEP>
-Apply the rule to the third term, 4x. The derivative of 4x is:
-4 (since the derivative of x is 1).
-</STEP>
-<STEP>
-The constant term, -7, has a derivative of 0 because the derivative of any constant is 0.
-</STEP>
-<ANSWER>
-9x^2 - 10x + 4
-</ANSWER>
-"""
-      },
-      {
-        "role": "user",
-        "content": "Solve the equation: 2x + 3 = 7."
-      },
-      {
-        "role": "assistant",
-        "content": """
-Reasoning step-by-step:
-<STEP>
-Subtract 3 from both sides of the equation to isolate the term with x:
-2x + 3 - 3 = 7 - 3, 2x = 4.
-</STEP>
-<STEP>
-Divide both sides by 2 to solve for x:
-2x / 2 = 4 / 2, x = 2.
-</STEP>
-<ANSWER>
-x = 2
-</ANSWER>
-"""
-      }
-    ]
-
     few_shot_examples_GSM8K = [
       {
         "role": "system",
-        "content": "You are a helpful assistant that solves math problems step by step. Follow the examples provided and solve the given problem logically. Make sure to solve it within 10 steps."
+        "content": "You are a helpful assistant that solves math problems step by step. Follow the examples provided and solve the given problem logically."
       },
       {
         "role": "user",

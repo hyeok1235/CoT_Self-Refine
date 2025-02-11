@@ -62,66 +62,6 @@ if __name__ == "__main__":
     # Define the model and load it
     solver = MathProblemSolver(model_name=model_name)
 
-    # Define few-shot examples
-    few_shot_examples = [
-        {
-            "role": "system",
-            "content": "You are a helpful assistant that solves math problems step by step. Follow the examples provided and solve the given problem logically. Make sure to solve it within 10 steps."
-        },
-        {
-            "role": "user",
-            "content": "Find the derivative of the function f(x) = 3x^3 - 5x^2 + 4x - 7."
-        },
-        {
-            "role": "assistant",
-            "content": """
-Reasoning step-by-step:
-<STEP>
-We begin by identifying the general rules for derivatives. For any term ax^n, the derivative is given by n * ax^(n-1).
-</STEP>
-<STEP>
-Apply the rule to the first term, 3x^3. The derivative of 3x^3 is:
-3 * 3x^2 = 9x^2.
-</STEP>
-<STEP>
-Apply the rule to the second term, -5x^2. The derivative of -5x^2 is:
-2 * (-5)x = -10x.
-</STEP>
-<STEP>
-Apply the rule to the third term, 4x. The derivative of 4x is:
-4 (since the derivative of x is 1).
-</STEP>
-<STEP>
-The constant term, -7, has a derivative of 0 because the derivative of any constant is 0.
-</STEP>
-<ANSWER>
-9x^2 - 10x + 4
-</ANSWER>
-"""
-        },
-        {
-            "role": "user",
-            "content": "Solve the equation: 2x + 3 = 7."
-        },
-        {
-            "role": "assistant",
-            "content": """
-Reasoning step-by-step:
-<STEP>
-Subtract 3 from both sides of the equation to isolate the term with x:
-2x + 3 - 3 = 7 - 3, 2x = 4.
-</STEP>
-<STEP>
-Divide both sides by 2 to solve for x:
-2x / 2 = 4 / 2, x = 2.
-</STEP>
-<ANSWER>
-x = 2
-</ANSWER>
-"""
-        }
-    ]
-
     few_shot_examples_GSM8K = [
         {
         "role": "system",
@@ -203,6 +143,12 @@ Finally, calculate how much more Betty needs by subtracting the total money she 
 
         correct = 0
         count = 0
+        cor_to_cor = 0
+        wro_to_cor = 0
+
+        cor_to_wro = 0
+        wro_to_wro1 = 0
+        wro_to_wro2 = 0
 
         # Initialize tqdm for progress bar
         for data in tqdm(sampled_dataset, desc="Processing problems", total=num_samples):
@@ -211,16 +157,34 @@ Finally, calculate how much more Betty needs by subtracting the total money she 
 
             # Generate solution using the model
             generated_solution = solver.solve_problem(problem, few_shot_examples_GSM8K)
-            formatted_answer = extract_numeric_value(generated_solution)
+            formatted_initial_answer = extract_numeric_value(generated_solution[0])
+            formatted_answer = extract_numeric_value(generated_solution[1])
 
             # Extract the value after #### from the ground truth
             ground_truth_value = extract_numeric_value(extract_final_value_from_ground_truth(ground_truth))
 
+
+
+
             # Check if ground_truth_value is inside generated_solution
             if ground_truth_value in formatted_answer or formatted_answer in ground_truth_value:
                 correct += 1
+                if formatted_initial_answer == formatted_answer:
+                    cor_to_cor += 1
+                else:
+                    wro_to_cor += 1
             else:
+                if formatted_initial_answer in ground_truth_value or ground_truth_value in formatted_initial_answer:
+                    cor_to_wro += 1
+                    print("cor_to_wro")
+                elif formatted_initial_answer == formatted_answer:
+                    wro_to_wro1 += 1
+                    print("wro_to_wro1")
+                else:
+                    wro_to_wro2 += 1
+                    print("wro_to_wro2")
                 print(f"Problem: {problem}")
+                print(f"Initial Answer: {generated_solution[0]}")
                 print(f"Generated Solution: {formatted_answer}")
                 print(f"Ground Truth: {ground_truth_value}")
                 print("--------------------")
@@ -232,8 +196,18 @@ Finally, calculate how much more Betty needs by subtracting the total money she 
                 accuracy = (correct / count) * 100
                 print("\n************************************\n")
                 print(f"Accuracy after {count} problems: {accuracy:.2f}%")
+                print("Correct to Correct: ", cor_to_cor)
+                print("Wrong to Correct: ", wro_to_cor)
+                print("Correct to Wrong: ", cor_to_wro)
+                print("Wrong to Wrong (Initial Answer == Generated Answer): ", wro_to_wro1)
+                print("Wrong to Wrong (Initial Answer != Generated Answer): ", wro_to_wro2)
                 print("\n************************************\n")
 
         # Final accuracy calculation
         accuracy = (correct / count) * 100
         print(f"Total Accuracy on {dataset_name}: {accuracy:.2f}%")
+        print("Correct to Correct: ", cor_to_cor)
+        print("Wrong to Correct: ", wro_to_cor)
+        print("Correct to Wrong: ", cor_to_wro)
+        print("Wrong to Wrong (Initial Answer == Generated Answer): ", wro_to_wro1)
+        print("Wrong to Wrong (Initial Answer != Generated Answer): ", wro_to_wro2)
