@@ -5,7 +5,7 @@ import torch
 import re
 
 class MathProblemSolver:
-    def __init__(self, model_name: str, cuda_devices: str = "0,1", quantization_bits: Optional[int] = 4):
+    def __init__(self, model_name: str, cuda_devices: str = "2,3", quantization_bits: Optional[int] = 4):
         self.model_name = model_name
         self.tokenizer = None
         self.model = None
@@ -173,12 +173,66 @@ Reasoning step-by-step:
             ]
 
             feedback_tokenized_chat = self.tokenize_chat(feedback_prompt)
-            feedback_output = self.generate_output(feedback_tokenized_chat)
+            feedback_output1 = self.generate_output(feedback_tokenized_chat, True, 0.8)
+            feedback_output2 = self.generate_output(feedback_tokenized_chat, True, 0.8)
+            feedback_output3 = self.generate_output(feedback_tokenized_chat, True, 0.8)
 
-            feedback = self.decode_output(feedback_output, False)\
+            feedback1 = self.decode_output(feedback_output1, False)\
                         .split("Feedback:")[-1].strip()
+            feedback2 = self.decode_output(feedback_output2, False)\
+                        .split("Feedback:")[-1].strip()
+            feedback3 = self.decode_output(feedback_output3, False)\
+                        .split("Feedback:")[-1].strip()
+            feedback_list = [feedback1, feedback2, feedback3]
+            # print(feedback_list)
+            # print("\n\n******************\n\n")
+            
+            # Decide which feedback to use
+            feedback_choose_prompt = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are evaluating three different feedback responses for a specific step in a math problem. "
+                        "Your task is to analyze each feedback response carefully and select the best one. "
+                        "Follow these guidelines:\n"
+                        "1. **Consider the problem statement and full reasoning steps** before assessing feedback.\n"
+                        "2. **Ensure the selected feedback correctly identifies errors (if any) or confirms correctness.**\n"
+                        "3. **Check if the feedback is clear, precise, and provides an accurate correction (if needed).**\n"
+                        "4. **Reject feedback that is misleading, vague, or introduces unnecessary modifications.**\n"
+                        "5. Provide a structured comparison of all three feedback options before making a final choice.\n"
+                        "6. Conclude your response **strictly** in this format: 'The best choice is 1.', 'The best choice is 2.', or 'The best choice is 3.'."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"**Problem:** {problem}\n\n"
+                        f"**Full Reasoning Steps:**\n" + "\n".join(f"<STEP>{step}</STEP>" for step in current_step) +
+                        f"\n\n**Step under review:**\n<STEP>{current_step[step_index - 1]}</STEP>\n\n"
+                        "Now, evaluate the following three feedback responses and **strictly select the best one**:\n\n"
+                        f"**Feedback 1:** {feedback1}\n\n"
+                        f"**Feedback 2:** {feedback2}\n\n"
+                        f"**Feedback 3:** {feedback3}\n\n"
+                        "Provide a structured analysis of each feedback response and conclude **only** with one of the following statements:\n"
+                        "'The best choice is 1.'\n"
+                        "'The best choice is 2.'\n"
+                        "'The best choice is 3.'"
+                    )
+                },
+                {
+                    "role": "assistant",
+                    "content": "Okay, let me evaluate the feedback responses."
+                }
+            ]
+            feedback_choose_chat = self.tokenize_chat(feedback_choose_prompt)
+            print(feedback_choose_prompt)
+            feedback_choose_output = self.generate_output(feedback_choose_chat)
+            feedback_choose_result = self.decode_output(feedback_choose_output, False).split("The best choice is ")[-1].strip()[0]
+            feedback = feedback_list[int(feedback_choose_result) - 1]
+
             # print(f"Feedback: {feedback}")
             # print("\n\n******************\n\n")
+
             if "step is correct" in feedback.lower():
                 pass_count += 1
                 step_index += 1
@@ -224,8 +278,8 @@ Reasoning step-by-step:
 
             refined_result = self.decode_output(refine_output, False).split("Refined Reasoning Step-by-Step:\n")[-1]
             refined_steps = re.findall(r"<STEP>(.*?)</STEP>", refined_result, re.DOTALL)
-            # print(f"Refined Steps: {refined_steps}")
-            # print("\n\n******************\n\n")
+            print(f"Refined Steps: {refined_steps}")
+            print("\n\n******************\n\n")
             previous_steps = "\n".join(f"<STEP>{step}</STEP>" for step in refined_steps[:forward_step_index - 1])
 
             # --- CONTINUATION PROMPT ---
@@ -249,8 +303,8 @@ Reasoning step-by-step:
             continued_answer = continued_result.split("<ANSWER>")[-1].split("</ANSWER>")[0].strip()
             result = "\n".join(f"<STEP>{step}</STEP>" for step in continued_steps) + f"<ANSWER>{continued_answer}</ANSWER>"
             step_index += 1
-            # print(f"Refined Solution: {result}")
-            # print("\n\n******************\n\n")
+            print(f"Refined Solution: {result}")
+            print("\n\n******************\n\n")
         return [intial_answer, result.split("<ANSWER>")[-1].split("</ANSWER>")[0].strip(), pass_count, len(steps)]
 
 
