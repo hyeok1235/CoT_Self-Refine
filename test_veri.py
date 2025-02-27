@@ -1,12 +1,12 @@
 import re
-from to_delete import MathProblemSolver
+from cot_feedback_verification import MathProblemSolver
 from datasets import load_dataset
 import random
 import json
 from tqdm import tqdm
 import csv
 
-csv_filename = "evaluation_results_cot.csv"
+csv_filename = "evaluation_results_cot_2.csv"
 
 model_name = "meta-llama/Meta-Llama-3.1-8B-Instruct"
 
@@ -157,12 +157,12 @@ Finally, calculate how much more Betty needs by subtracting the total money she 
 
     correct = 0
     count = 0
-    cor_to_cor = 0
-    wro_to_cor = 0
+    cor_to_cor = [0, 0, 0, 0] # 경우의 수, accept된 피드백의 개수, valid한 피드백의 총 개수, 전체 step의 개수
+    wro_to_cor = [0, 0, 0, 0]
 
-    cor_to_wro = 0
-    wro_to_wro1 = 0
-    wro_to_wro2 = 0
+    cor_to_wro = [0, 0, 0, 0]
+    wro_to_wro1 = [0, 0, 0, 0]
+    wro_to_wro2 = [0, 0, 0, 0]
 
     with open(csv_filename, mode="w", newline="") as csv_file:
         writer = csv.writer(csv_file)
@@ -176,6 +176,9 @@ Finally, calculate how much more Betty needs by subtracting the total money she 
             generated_solution = solver.solve_problem(problem, few_shot_examples_GSM8K)
             formatted_initial_answer = extract_numeric_value(generated_solution[0])
             formatted_answer = extract_numeric_value(generated_solution[1])
+            accept_count = generated_solution[3] - generated_solution[2]
+            valid_feedback_count = generated_solution[3]
+            step_count = generated_solution[4]
 
             # Extract the value after #### from the ground truth
             ground_truth_value = extract_numeric_value(extract_final_value_from_ground_truth(ground_truth))
@@ -184,21 +187,36 @@ Finally, calculate how much more Betty needs by subtracting the total money she 
             writer.writerow([formatted_initial_answer, formatted_answer, ground_truth_value])
 
             # Check if ground_truth_value is inside generated_solution
-            if ground_truth_value in formatted_answer or formatted_answer in ground_truth_value:
+            if ground_truth_value in formatted_answer or formatted_answer in ground_truth_value: # b = c
                 correct += 1
-                if formatted_initial_answer in formatted_answer or formatted_answer in formatted_initial_answer:
-                    cor_to_cor += 1
-                else:
-                    wro_to_cor += 1
-            else:
-                if formatted_initial_answer in ground_truth_value or ground_truth_value in formatted_initial_answer:
-                    cor_to_wro += 1
+                if formatted_initial_answer in formatted_answer or formatted_answer in formatted_initial_answer: # a = b
+                    cor_to_cor[0] += 1
+                    cor_to_cor[1] += accept_count
+                    cor_to_cor[2] += valid_feedback_count
+                    cor_to_cor[3] += step_count
+                else:                                       # a != b
+                    wro_to_cor[0] += 1
+                    wro_to_cor[1] += accept_count
+                    wro_to_cor[2] += valid_feedback_count
+                    wro_to_cor[3] += step_count
+            else:                                               # b != c
+                if formatted_initial_answer in ground_truth_value or ground_truth_value in formatted_initial_answer: # a = c
+                    cor_to_wro[0] += 1
+                    cor_to_wro[1] += accept_count
+                    cor_to_wro[2] += valid_feedback_count
+                    cor_to_wro[3] += step_count
                     print("cor_to_wro")
-                elif formatted_initial_answer in formatted_answer or formatted_answer in formatted_initial_answer:
-                    wro_to_wro1 += 1
+                elif formatted_initial_answer in formatted_answer or formatted_answer in formatted_initial_answer:  # a = b and a != c
+                    wro_to_wro1[0] += 1
+                    wro_to_wro1[1] += accept_count
+                    wro_to_wro1[2] += valid_feedback_count
+                    wro_to_wro1[3] += step_count
                     print("wro_to_wro1")
-                else:
-                    wro_to_wro2 += 1
+                else:                                                                                               # a != b and a != c
+                    wro_to_wro2[0] += 1
+                    wro_to_wro2[1] += accept_count
+                    wro_to_wro2[2] += valid_feedback_count
+                    wro_to_wro2[3] += step_count
                     print("wro_to_wro2")
                 print(f"Problem: {problem}")
                 print(f"Initial Answer: {formatted_initial_answer}")

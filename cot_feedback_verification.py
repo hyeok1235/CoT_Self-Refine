@@ -240,7 +240,6 @@ Reasoning step-by-step:
                         "Your task is to correct **only** the specific step identified in the feedback, "
                         "while keeping all previously validated steps unchanged. "
                         "Ensure that your correction strictly addresses the identified error **without modifying correct logic**. "
-                        "Maintain the original step structure as much as possible."
                     )
                 },
                 {
@@ -297,7 +296,7 @@ Reasoning step-by-step:
             step_index += 1
             # print(f"Refined Solution: {result}")
             # print("\n\n******************\n\n")
-        return [intial_answer, result.split("<ANSWER>")[-1].split("</ANSWER>")[0].strip(), reject_count, len(steps) - pass_count] # reject된 피드백의 개수, valid한 피드백의 개수
+        return [intial_answer, result.split("<ANSWER>")[-1].split("</ANSWER>")[0].strip(), reject_count, len(steps) - pass_count, len(steps)] # reject된 피드백의 개수, valid한 피드백의 개수, 전체 step의 개수
 
 
 # Usage Example

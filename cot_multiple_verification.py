@@ -116,6 +116,7 @@ Reasoning step-by-step:
         forward_look = 1
         intial_answer = result.split("<ANSWER>")[-1].split("</ANSWER>")[0].strip()
         pass_count = 0
+        reject_count = 0
         # print(f"Initial Solution: {result}")
         # print("\n\n******************\n\n")
 
@@ -142,12 +143,12 @@ Reasoning step-by-step:
                         "First, the user will provide all the reasoning steps for a problem. "
                         "Then, they will extract a **specific step** for you to evaluate. "
                         "Your response should follow these guidelines:\n"
-                        "1. Check if the step is **logically consistent** with the previous steps.\n"
-                        "2. Check if the step shows a clear understanding of the problem. If not, step is incorrect and you need to suggest a correction. \n"
+                        "1. Check if the step is **logically consistent** with the reasoning steps.\n"
+                        "2. If the step is **mathematically and logically correct**, respond with: 'Step is correct.'\n"
                         "3. If there is an **error**, provide a concise explanation of the mistake and suggest a correction.\n"
                         "4. Avoid unnecessary suggestions or changes to correct steps.\n"
                         "5. Keep your feedback factual, clear, and precise. \n"
-                        "6. If the step is mathematically and logically correct, respond with: 'Step is correct.'\n"
+                        "6. Check if the step demonstrates a clear understanding of the problem.\n"
                     )
                 },
                 {
@@ -239,14 +240,55 @@ Reasoning step-by-step:
             else:
                 feedback = feedback_list[2]
 
-            # print(f"Feedback: {feedback}")
-            # print("\n\n******************\n\n")
+            print(f"Feedback: {feedback}")
+            print("\n\n******************\n\n")
 
             if "step is correct" in feedback.lower():
                 pass_count += 1
                 step_index += 1
                 continue
+            print("fixing the step...")
+            # Decide which feedback to use
+            feedback_verification_prompt = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an expert in mathematical reasoning and problem-solving verification. "
+                        "Your task is to evaluate the quality of feedback provided for a specific problem-solving step. "
+                        "You must determine if the feedback correctly identifies errors, provides clear and precise guidance, "
+                        "and does not modify correct parts of the step. Your analysis should be based on the problem statement, "
+                        "previously validated steps, and the designated step under review."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        "Analyze the feedback provided below in the context of the problem and the previously validated steps. "
+                        "**Problem:**\n" + problem + "\n\n"
+                        "**Previously Validated Steps:**\n" + "\n".join(f"<STEP>{step}</STEP>" for step in current_step[:step_index - 1]) + "\n\n"
+                        "**Designated Step Under Review:**\n<STEP>" + current_step[step_index - 1] + "</STEP>\n\n"
+                        "**Feedback Provided:**\n" + feedback + "\n\n"
+                        "Verify the feedback, and then conclude on the final line with exactly one of these statements:\n"
+                        "'The feedback is valid.' or 'The feedback is invalid.'"
+                    )
+                },
+                {
+                    "role": "assistant",
+                    "content": (
+                        "Analysis:\n"
+                    )
+                }
+            ]
 
+            feedback_choose_chat = self.tokenize_chat(feedback_verification_prompt)
+            feedback_choose_output = self.generate_output(feedback_choose_chat)
+            feedback_choose_result = self.decode_output(feedback_choose_output, False).split("The feedback is ")[-1].strip()
+            # if feedback is invalid just continue to the next step. If feedback is valid, use it to refine the solution
+            if "invalid" in feedback_choose_result:
+                reject_count += 1
+                step_index += 1
+                continue
+            
             # --- REFINE PROMPT ---
             # Now instruct the model to refine the step immediately preceding the most recent step
             refine_prompt = [
@@ -312,9 +354,9 @@ Reasoning step-by-step:
             continued_answer = continued_result.split("<ANSWER>")[-1].split("</ANSWER>")[0].strip()
             result = "\n".join(f"<STEP>{step}</STEP>" for step in continued_steps) + f"<ANSWER>{continued_answer}</ANSWER>"
             step_index += 1
-            # print(f"Refined Solution: {result}")
-            # print("\n\n******************\n\n")
-        return [intial_answer, result.split("<ANSWER>")[-1].split("</ANSWER>")[0].strip(), pass_count, len(steps)]
+            print(f"Refined Solution: {result}")
+            print("\n\n******************\n\n")
+        return [intial_answer, result.split("<ANSWER>")[-1].split("</ANSWER>")[0].strip(), pass_count, len(steps) - reject_count, len(steps)]
 
 
 # Usage Example

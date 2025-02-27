@@ -71,6 +71,7 @@ class MathProblemSolver:
             max_length=max_length
         )
 
+    
     def generate_output(self, tokenized_chat, do_sample: bool = False, temperature: float = 1.0, max_new_tokens: int = 1024):
         # Move tokenized_chat tensor to the correct device
         tokenized_chat = tokenized_chat.to(self.model.device)
@@ -81,7 +82,6 @@ class MathProblemSolver:
             do_sample=do_sample,
             temperature=temperature
         )
-
 
     def decode_output(self, outputs, skip_sepcial_tokens):
         """
@@ -114,8 +114,8 @@ Reasoning step-by-step:
 
         step_index = 1
         forward_look = 1
-        intial_answer = result.split("<ANSWER>")[-1].split("</ANSWER>")[0].strip()
         pass_count = 0
+        intial_answer = result.split("<ANSWER>")[-1].split("</ANSWER>")[0].strip()
         # print(f"Initial Solution: {result}")
         # print("\n\n******************\n\n")
 
@@ -142,12 +142,12 @@ Reasoning step-by-step:
                         "First, the user will provide all the reasoning steps for a problem. "
                         "Then, they will extract a **specific step** for you to evaluate. "
                         "Your response should follow these guidelines:\n"
-                        "1. Check if the step is **logically consistent** with the previous steps.\n"
-                        "2. Check if the step shows a clear understanding of the problem. If not, step is incorrect and you need to suggest a correction. \n"
+                        "1. Check if the step is **logically consistent** with the reasoning steps.\n"
+                        "2. If the step is **mathematically and logically correct**, respond with: 'Step is correct.'\n"
                         "3. If there is an **error**, provide a concise explanation of the mistake and suggest a correction.\n"
                         "4. Avoid unnecessary suggestions or changes to correct steps.\n"
                         "5. Keep your feedback factual, clear, and precise. \n"
-                        "6. If the step is mathematically and logically correct, respond with: 'Step is correct.'\n"
+                        "6. Check if the step demonstrates a clear understanding of the problem.\n"
                     )
                 },
                 {
@@ -173,79 +173,19 @@ Reasoning step-by-step:
             ]
 
             feedback_tokenized_chat = self.tokenize_chat(feedback_prompt)
-            feedback_output1 = self.generate_output(feedback_tokenized_chat, True, 0.8)
-            feedback_output2 = self.generate_output(feedback_tokenized_chat, True, 0.8)
-            feedback_output3 = self.generate_output(feedback_tokenized_chat, True, 0.8)
+            feedback_output = self.generate_output(feedback_tokenized_chat)
 
-            feedback1 = self.decode_output(feedback_output1, False)\
+            feedback = self.decode_output(feedback_output, False)\
                         .split("Feedback:")[-1].strip()
-            feedback2 = self.decode_output(feedback_output2, False)\
-                        .split("Feedback:")[-1].strip()
-            feedback3 = self.decode_output(feedback_output3, False)\
-                        .split("Feedback:")[-1].strip()
-            feedback_list = [feedback1, feedback2, feedback3]
-            # print(feedback_list)
-            # print("\n\n******************\n\n")
-            
-            # Decide which feedback to use
-            feedback_choose_prompt = [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are evaluating three different feedback responses for a specific step in a math problem. "
-                        "Your task is to analyze each feedback response carefully and select the best one. "
-                        "Follow these guidelines:\n"
-                        "1. **Consider the problem statement and full reasoning steps** before assessing feedback.\n"
-                        "2. **Ensure the selected feedback correctly identifies errors (if any) or confirms correctness.**\n"
-                        "3. **Check if the feedback is clear, precise, and provides an accurate correction (if needed).**\n"
-                        "4. **Reject feedback that is misleading, vague, or introduces unnecessary modifications.**\n"
-                        "5. Provide a structured comparison of all three feedback options before making a final choice.\n"
-                        "6. Conclude your response **strictly** in this format: 'The best choice is 1.', 'The best choice is 2.', or 'The best choice is 3.'."
-                    )
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        f"**Problem:** {problem}\n\n"
-                        f"**Full Reasoning Steps:**\n" + "\n".join(f"<STEP>{step}</STEP>" for step in current_step) +
-                        f"\n\n**Step under review:**\n<STEP>{current_step[step_index - 1]}</STEP>\n\n"
-                        "Now, evaluate the following three feedback responses and **strictly select the best one**:\n\n"
-                        f"**Feedback 1:** {feedback1}\n\n"
-                        f"**Feedback 2:** {feedback2}\n\n"
-                        f"**Feedback 3:** {feedback3}\n\n"
-                        "Provide a structured analysis of each feedback response and conclude **only** with one of the following statements:\n"
-                        "'The best choice is 1.'\n"
-                        "'The best choice is 2.'\n"
-                        "'The best choice is 3.'"
-                    )
-                },
-                {
-                    "role": "assistant",
-                    "content": "Okay, let me evaluate the feedback responses."
-                }
-            ]
-            feedback_choose_chat = self.tokenize_chat(feedback_choose_prompt)
-            feedback_choose_output = self.generate_output(feedback_choose_chat)
-            # feedback_choose_result = self.decode_output(feedback_choose_output, False).split("The best choice is ")[-1].strip()[0]
-            # feedback = feedback_list[int(feedback_choose_result) - 1]
-
-            feedback_choose_result = self.decode_output(feedback_choose_output, True).split("assistant\n")[-1]
-            feedback_choose_result = feedback_choose_result.split("best choice is ")[-1].strip()
-
-            if "1" in feedback_choose_result:
-                feedback = feedback_list[0]
-            elif "2" in feedback_choose_result:
-                feedback = feedback_list[1]
-            else:
-                feedback = feedback_list[2]
-
             # print(f"Feedback: {feedback}")
             # print("\n\n******************\n\n")
-
             if "step is correct" in feedback.lower():
                 pass_count += 1
                 step_index += 1
                 continue
+
+            # print(f"Feedback: {feedback}")
+            # print("\n\n******************\n\n")
 
             # --- REFINE PROMPT ---
             # Now instruct the model to refine the step immediately preceding the most recent step
@@ -256,36 +196,35 @@ Reasoning step-by-step:
                         "You are refining a problem-solving step based on expert feedback. "
                         "Your task is to correct **only** the specific step identified in the feedback, "
                         "while keeping all previously validated steps unchanged. "
-                        "Ensure that your correction strictly addresses the identified error without modifying correct logic. "
+                        "Ensure that your correction strictly addresses the identified error **without modifying correct logic**. "
                     )
                 },
                 {
                     "role": "user",
                     "content": (
-                        f"Refine the specific step only, based on the feedback provided below.\n\n"
+                        f"Refine last step only, based on the feedback provided below.\n\n"
                         "**Problem:** " + problem + "\n\n"
-                        f"**Full Reasoning Steps:**\n" + "\n".join(f"<STEP>{step}</STEP>" for step in current_step) +
-                        f"\n\n**Step under review:**\n<STEP>{current_step[step_index - 1]}</STEP>\n\n"
-                        f"**Feedback:**\n{feedback}\n\n"
+                        "**Reasoning step-by-step (before refinement):**\n"
+                        + "\n".join(f"<STEP>{step}</STEP>" for step in current_step[:step_index]) +
+                        f"\n\n**Feedback on last step :** {feedback}\n\n"
                         "**Provide the corrected step below without modifying other correct steps.**"
                     )
                 },
                 {
                     "role": "assistant",
                     "content": (
-                        "Refined Reasoning Step-by-Step:\n"
+                        "**Refined Reasoning Step-by-Step:**\n"
                         + "\n".join(f"<STEP>{step}</STEP>" for step in current_step[:step_index - 1]) +  # Keep previous steps unchanged
                         "<STEP>"  # This signals where the refined step will be inserted
                     )
                 }
             ]
 
-            # print(f"Refine Prompt: {refine_prompt}")
 
             refine_tokenized_chat = self.tokenize_chat(refine_prompt)
             refine_output = self.generate_output(refine_tokenized_chat)
 
-            refined_result = self.decode_output(refine_output, False).split("Refined Reasoning Step-by-Step:\n")[-1]
+            refined_result = self.decode_output(refine_output, False).split("**Refined Reasoning Step-by-Step:**\n")[-1]
             refined_steps = re.findall(r"<STEP>(.*?)</STEP>", refined_result, re.DOTALL)
             # print(f"Refined Steps: {refined_steps}")
             # print("\n\n******************\n\n")
@@ -314,7 +253,7 @@ Reasoning step-by-step:
             step_index += 1
             # print(f"Refined Solution: {result}")
             # print("\n\n******************\n\n")
-        return [intial_answer, result.split("<ANSWER>")[-1].split("</ANSWER>")[0].strip(), pass_count, len(steps)]
+        return [intial_answer, result.split("<ANSWER>")[-1].split("</ANSWER>")[0].strip(), len(steps) - pass_count, len(steps)] # valid한 피드백의 개수, 전체 step의 개수
 
 
 # Usage Example
@@ -323,25 +262,18 @@ if __name__ == "__main__":
     solver = MathProblemSolver(model_name=model_name)
 
     few_shot_examples_GSM8K = [
-        {
+      {
         "role": "system",
-        "content": "You are a helpful assistant that solves math problems step by step. Follow the examples provided and solve the given problem logically.\n\n"
-"Format each step as follows:\n"
-"<STEP>\n"
-"Your step-by-step reasoning goes here.\n"
-"</STEP>\n\n"
-"Provide the final answer in this format:\n"
-"<ANSWER>\n"
-"Final answer here.\n"
-"</ANSWER>"
-        },
-        {
-            "role": "user",
-            "content": "Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How many clips did Natalia sell altogether in April and May?"
-        },
-        {
-            "role": "assistant",
-            "content": """
+        "content": "You are a helpful assistant that solves math problems step by step. Follow the examples provided and solve the given problem logically."
+      },
+      {
+        "role": "user",
+        "content": "Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How many clips did Natalia sell altogether in April and May?"
+      },
+      {
+        "role": "assistant",
+        "content": """
+Reasoning step-by-step:
 <STEP>
 Natalia sold half as many clips in May as in April. To calculate the number of clips sold in May, we divide the number sold in April by 2:
 48 / 2 = 24.
@@ -354,14 +286,15 @@ To find the total number of clips sold in April and May, we add the clips sold i
 72
 </ANSWER>
 """
-        },
-        {
-            "role": "user",
-            "content": "Betty is saving money for a new wallet which costs $100. Betty has only half of the money she needs. Her parents decided to give her $15 for that purpose, and her grandparents twice as much as her parents. How much more money does Betty need to buy the wallet?"
-        },
-        {
-            "role": "assistant",
-            "content": """
+      },
+      {
+        "role": "user",
+        "content": "Betty is saving money for a new wallet which costs $100. Betty has only half of the money she needs. Her parents decided to give her $15 for that purpose, and her grandparents twice as much as her parents. How much more money does Betty need to buy the wallet?"
+      },
+      {
+        "role": "assistant",
+        "content": """
+Reasoning step-by-step:
 <STEP>
 Initially, Betty has only half the money needed for the wallet. To calculate this amount, divide the wallet's cost by 2:
 100 / 2 = 50.
@@ -382,10 +315,11 @@ Finally, calculate how much more Betty needs by subtracting the total money she 
 5
 </ANSWER>
 """
-        }
+      }
     ]
 
 
     problem = "Josh decides to try flipping a house.  He buys a house for $80,000 and then puts in $50,000 in repairs.  This increased the value of the house by 150%.  How much profit did he make?"
     solution = solver.solve_problem(problem, few_shot_examples_GSM8K)
     print(solution)
+
