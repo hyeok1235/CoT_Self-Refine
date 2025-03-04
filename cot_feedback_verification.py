@@ -121,8 +121,8 @@ Reasoning step-by-step:
         # print("\n\n******************\n\n")
 
         # False -> CoT
-        # current_step_index <= 5 -> 5 iter
-        # current_step_index <= 10 -> 10 iter
+        # step_index <= 5 -> 5 iter
+        # step_index <= 10 -> 10 iter
         # True -> LLM's judgement
         while True:
             forward_step_index = step_index + forward_look

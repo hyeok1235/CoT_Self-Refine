@@ -4,9 +4,6 @@ from datasets import load_dataset
 import random
 import json
 from tqdm import tqdm
-import csv
-
-csv_filename = "evaluation_results_multi_veri_printing.csv"
 
 model_name = "meta-llama/Meta-Llama-3.1-8B-Instruct"
 
@@ -164,79 +161,76 @@ Finally, calculate how much more Betty needs by subtracting the total money she 
     wro_to_wro1 = [0, 0, 0, 0]
     wro_to_wro2 = [0, 0, 0, 0]
 
-    with open(csv_filename, mode="w", newline="") as csv_file:
-        writer = csv.writer(csv_file)
-        writer.writerow(["formatted_initial_answer", "formatted_answer", "ground_truth_value"])
-        # Initialize tqdm for progress bar
-        for data in tqdm(sampled_dataset, desc="Processing problems", total=num_samples):
-            problem = data["problem"]
-            ground_truth = data["solution"]
+    # Initialize tqdm for progress bar
+    for data in tqdm(sampled_dataset, desc="Processing problems", total=num_samples):
+        problem = data["problem"]
+        ground_truth = data["solution"]
 
-            # Generate solution using the model
-            generated_solution = solver.solve_problem(problem, few_shot_examples_GSM8K)
-            formatted_initial_answer = extract_numeric_value(generated_solution[0])
-            formatted_answer = extract_numeric_value(generated_solution[1])
-            accept_count = generated_solution[3] - generated_solution[2]
-            valid_feedback_count = generated_solution[3]
-            step_count = generated_solution[4]
+        # Generate solution using the model
+        generated_solution = solver.solve_problem(problem, few_shot_examples_GSM8K)
+        formatted_initial_answer = extract_numeric_value(generated_solution[0])
+        formatted_answer = extract_numeric_value(generated_solution[1])
+        accept_count = generated_solution[3] - generated_solution[2]
+        valid_feedback_count = generated_solution[3]
+        step_count = generated_solution[4]
 
-            # Extract the value after #### from the ground truth
-            ground_truth_value = extract_numeric_value(extract_final_value_from_ground_truth(ground_truth))
+        # Extract the value after #### from the ground truth
+        ground_truth_value = extract_numeric_value(extract_final_value_from_ground_truth(ground_truth))
 
-            # Write the extracted values as a row in the CSV file
-            writer.writerow([formatted_initial_answer, formatted_answer, ground_truth_value])
+        # Write the extracted values as a row in the CSV file
+        writer.writerow([formatted_initial_answer, formatted_answer, ground_truth_value])
 
-            # Check if ground_truth_value is inside generated_solution
-            if ground_truth_value in formatted_answer or formatted_answer in ground_truth_value:
-                correct += 1
-                if formatted_initial_answer == formatted_answer:
-                    cor_to_cor[0] += 1
-                    cor_to_cor[1] += accept_count
-                    cor_to_cor[2] += valid_feedback_count
-                    cor_to_cor[3] += step_count
-                else:
-                    wro_to_cor[0] += 1
-                    wro_to_cor[1] += accept_count
-                    wro_to_cor[2] += valid_feedback_count
-                    wro_to_cor[3] += step_count
+        # Check if ground_truth_value is inside generated_solution
+        if ground_truth_value in formatted_answer or formatted_answer in ground_truth_value:
+            correct += 1
+            if formatted_initial_answer in formatted_answer or formatted_answer in formatted_initial_answer:
+                cor_to_cor[0] += 1
+                cor_to_cor[1] += accept_count
+                cor_to_cor[2] += valid_feedback_count
+                cor_to_cor[3] += step_count
             else:
-                if formatted_initial_answer in ground_truth_value or ground_truth_value in formatted_initial_answer:
-                    cor_to_wro[0] += 1
-                    cor_to_wro[1] += accept_count
-                    cor_to_wro[2] += valid_feedback_count
-                    cor_to_wro[3] += step_count
-                    print("cor_to_wro")
-                elif formatted_initial_answer == formatted_answer:
-                    wro_to_wro1[0] += 1
-                    wro_to_wro1[1] += accept_count
-                    wro_to_wro1[2] += valid_feedback_count
-                    wro_to_wro1[3] += step_count
-                    print("wro_to_wro1")
-                else:
-                    wro_to_wro2[0] += 1
-                    wro_to_wro2[1] += accept_count
-                    wro_to_wro2[2] += valid_feedback_count
-                    wro_to_wro2[3] += step_count
-                    print("wro_to_wro2")
-                print(f"Problem: {problem}")
-                print(f"Initial Answer: {formatted_initial_answer}")
-                print(f"Generated Solution: {formatted_answer}")
-                print(f"Ground Truth: {ground_truth_value}")
-                print("--------------------")
+                wro_to_cor[0] += 1
+                wro_to_cor[1] += accept_count
+                wro_to_cor[2] += valid_feedback_count
+                wro_to_cor[3] += step_count
+        else:
+            if formatted_initial_answer in ground_truth_value or ground_truth_value in formatted_initial_answer:
+                cor_to_wro[0] += 1
+                cor_to_wro[1] += accept_count
+                cor_to_wro[2] += valid_feedback_count
+                cor_to_wro[3] += step_count
+                print("cor_to_wro")
+            elif formatted_initial_answer in formatted_answer or formatted_answer in formatted_initial_answer:
+                wro_to_wro1[0] += 1
+                wro_to_wro1[1] += accept_count
+                wro_to_wro1[2] += valid_feedback_count
+                wro_to_wro1[3] += step_count
+                print("wro_to_wro1")
+            else:
+                wro_to_wro2[0] += 1
+                wro_to_wro2[1] += accept_count
+                wro_to_wro2[2] += valid_feedback_count
+                wro_to_wro2[3] += step_count
+                print("wro_to_wro2")
+            print(f"Problem: {problem}")
+            print(f"Initial Answer: {formatted_initial_answer}")
+            print(f"Generated Solution: {formatted_answer}")
+            print(f"Ground Truth: {ground_truth_value}")
+            print("--------------------")
 
-            count += 1
+        count += 1
 
-            # Calculate accuracy
-            if count % 100 == 0:
-                accuracy = (correct / count) * 100
-                print("\n************************************\n")
-                print(f"Accuracy after {count} problems: {accuracy:.2f}%")
-                print("Correct to Correct: ", cor_to_cor)
-                print("Wrong to Correct: ", wro_to_cor)
-                print("Correct to Wrong: ", cor_to_wro)
-                print("Wrong to Wrong (Initial Answer == Generated Answer): ", wro_to_wro1)
-                print("Wrong to Wrong (Initial Answer != Generated Answer): ", wro_to_wro2)
-                print("\n************************************\n")
+        # Calculate accuracy
+        if count % 100 == 0:
+            accuracy = (correct / count) * 100
+            print("\n************************************\n")
+            print(f"Accuracy after {count} problems: {accuracy:.2f}%")
+            print("Correct to Correct: ", cor_to_cor)
+            print("Wrong to Correct: ", wro_to_cor)
+            print("Correct to Wrong: ", cor_to_wro)
+            print("Wrong to Wrong (Initial Answer == Generated Answer): ", wro_to_wro1)
+            print("Wrong to Wrong (Initial Answer != Generated Answer): ", wro_to_wro2)
+            print("\n************************************\n")
 
     # Final accuracy calculation
     accuracy = (correct / count) * 100
