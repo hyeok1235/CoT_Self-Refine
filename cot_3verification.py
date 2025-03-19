@@ -148,7 +148,7 @@ Reasoning step-by-step:
         tokenized_chat = self.tokenize_chat(chat_history)
 
         outputs = self.generate_output(tokenized_chat)
-        outputs_confidence = self.generate_with_confidence(tokenized_chat)
+        # outputs_confidence = self.generate_with_confidence(tokenized_chat)
         result = self.decode_output(outputs, False).split("Reasoning step-by-step:")[-1]
 
         step_index = 1
@@ -163,7 +163,8 @@ Reasoning step-by-step:
         # print("--------------------")
 
         result_pairs.append({"question" : problem})
-        result_pairs.append({"reasoning_path": result, "answer": intial_answer, "confidence": outputs_confidence})
+        # result_pairs.append({"reasoning_path": result, "answer": intial_answer, "confidence": outputs_confidence})
+        result_pairs.append({"reasoning_path": result, "answer": intial_answer})
         # print(f"Initial Solution: {result}")
         # print("\n\n******************\n\n")
 
@@ -181,169 +182,124 @@ Reasoning step-by-step:
             current_step = steps[:forward_step_index] if forward_step_index <= len(steps) else steps
 
             # --- FEEDBACK PROMPT ---
-            # Now we instruct the model: “Give feedback on the step immediately preceding the most recent step only”
-            feedback_prompt = [
+            # Define three distinct feedback prompts
+            feedback_prompts = [
                 {
-                    "role": "system",
-                    "content": (
-                        "You are a math expert reviewing problem-solving steps. "
-                        "First, the user will provide all the reasoning steps for a problem. "
-                        "Then, they will extract a **specific step** for you to evaluate. "
-                        "Your response should follow these guidelines:\n"
-                        "1. Check if the step is **logically consistent** with the reasoning steps.\n"
-                        "2. If the step is **mathematically and logically correct**, start with: 'Step is correct.'\n"
-                        "3. If there is an **error**, start with 'Step is incorrect'. Then provide a concise explanation of the mistake and suggest a correction.\n"
-                        "4. Avoid unnecessary suggestions or changes to correct steps.\n"
-                        "5. Keep your feedback factual, clear, and precise. \n"
-                        "6. Check if the step demonstrates a clear understanding of the problem.\n"
+                "role": "system",
+                "content": (
+                    "You are a math expert reviewing a specific step in a math problem. "
+                    "Focus solely on identifying calculation errors (e.g., arithmetic or algebraic manipulation mistakes). "
+                    "If there are no calculation errors, simply output: 'Step is mathematically correct.' "
+                    "If a critical or major calculation error is present (one that significantly impacts the validity of the step), output: 'Step is mathematically incorrect.' Then briefly explain the error and suggest a correction."
+                    "Do not comment on logical alignment or overall problem understanding."
+                    "Avoid providing feedback unless the error is critical or major."
                     )
                 },
                 {
-                    "role": "user",
-                    "content": (
-                        "Here is the full reasoning for the problem:\n\n"
-                        "Problem: " + problem + "\n\n"
-                        "Steps:\n" + "\n".join(f"<STEP>{step}</STEP>" for step in current_step)
+                "role": "system",
+                "content": (
+                    "You are a math expert reviewing a specific step in a math problem. "
+                    "Your task is exclusively to assess whether the step logically follows from the previous reasoning. "
+                    "If the step logically follows, simply output: 'Step aligns logically.' "
+                    "If there is a critical or major misalignment (one that significantly impacts the logical flow of reasoning), output: 'Step does not align logically.' Then briefly describe the discrepancy and recommend how to fix it."
+                    "Do not address calculation accuracy or conceptual understanding."
+                    "Avoid providing feedback unless the error is critical or major."
                     )
                 },
                 {
-                    "role": "assistant",
-                    "content": "Yes, I got it. What step should I feedback on?"
-                },
-                {
-                    "role": "user",
-                    "content": "<STEP>" + current_step[step_index - 1] + "</STEP>"
-                },
-                {
-                    "role": "assistant",
-                    "content": "Feedback:\n"
-                }
-            ]
-
-            feedback_tokenized_chat = self.tokenize_chat(feedback_prompt)
-            feedback_output1 = self.generate_output(feedback_tokenized_chat, True, 0.2)
-            feedback_output2 = self.generate_output(feedback_tokenized_chat, True, 0.2)
-            feedback_output3 = self.generate_output(feedback_tokenized_chat, True, 0.2)
-
-            feedback1 = self.decode_output(feedback_output1, False)\
-                        .split("Feedback:")[-1].strip()
-            feedback2 = self.decode_output(feedback_output2, False)\
-                        .split("Feedback:")[-1].strip()
-            feedback3 = self.decode_output(feedback_output3, False)\
-                        .split("Feedback:")[-1].strip()
-
-            # feedback_list = [feedback1, feedback2, feedback3]
-            # print(feedback_list)
-            # print("\n\n******************\n\n")
-            
-            # Decide which feedback to use
-            feedback_choose_prompt = [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are evaluating three different feedback responses for a specific step in a math problem. "
-                        "Your task is to analyze each feedback response carefully and select the best one. "
-                        "Follow these guidelines:\n"
-                        "1. **Consider the problem statement and full reasoning steps** before assessing feedback.\n"
-                        "2. **Ensure the selected feedback correctly identifies errors (if any) or confirms correctness.**\n"
-                        "3. **Check if the feedback is clear, precise, and provides an accurate correction (if needed).**\n"
-                        "4. **Reject feedback that is misleading, vague, or introduces unnecessary modifications.**\n"
-                        "5. Provide a structured comparison of all three feedback options before making a final choice.\n"
-                        "6. Conclude your response **strictly** in this format: 'The best choice is 1.', 'The best choice is 2.', or 'The best choice is 3.'."
-                    )
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        f"**Problem:** {problem}\n\n"
-                        f"**Full Reasoning Steps:**\n" + "\n".join(f"<STEP>{step}</STEP>" for step in current_step) +
-                        f"\n\n**Step under review:**\n<STEP>{current_step[step_index - 1]}</STEP>\n\n"
-                        "Now, evaluate the following three feedback responses and **strictly select the best one**:\n\n"
-                        f"**Feedback 1:** {feedback1}\n\n"
-                        f"**Feedback 2:** {feedback2}\n\n"
-                        f"**Feedback 3:** {feedback3}\n\n"
-                        "Provide a structured analysis of each feedback response and conclude **only** with one of the following statements:\n"
-                        "'The best choice is 1.'\n"
-                        "'The best choice is 2.'\n"
-                        "'The best choice is 3.'"
-                    )
-                },
-                {
-                    "role": "assistant",
-                    "content": "Okay, let me evaluate the feedback responses."
-                }
-            ]
-            feedback_choose_chat = self.tokenize_chat(feedback_choose_prompt)
-            feedback_choose_output = self.generate_output(feedback_choose_chat)
-            # feedback_choose_result = self.decode_output(feedback_choose_output, False).split("The best choice is ")[-1].strip()[0]
-            # feedback = feedback_list[int(feedback_choose_result) - 1]
-
-            feedback_choose_result = self.decode_output(feedback_choose_output, True).split("assistant\n")[-1]
-            feedback_choose_result = feedback_choose_result.split("best choice is ")[-1].strip()
-
-            if "1" in feedback_choose_result:
-                feedback = feedback1
-            elif "2" in feedback_choose_result:
-                feedback = feedback2
-            else:
-                feedback = feedback3
-
-            # print(f"Feedback: {feedback}")
-            # print("\n\n******************\n\n")
-            
-            if "step is incorrect" not in feedback.lower():
-                pass_count += 1
-                step_index += 1
-                # print("## moving on ##")
-                continue
-
-            result_pairs.append({"feedback": feedback})
-            # print(f"Feedback: {feedback}")
-            # print("\n\n******************\n\n")
-
-            # Decide which feedback to use
-            feedback_verification_prompt = [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are an expert in mathematical reasoning and problem-solving verification. "
-                        "Your task is to evaluate the quality of feedback provided for a specific problem-solving step. "
-                        "You must determine if the feedback correctly identifies errors, provides clear and precise guidance, "
-                        "and does not modify correct parts of the step. Your analysis should be based on the problem statement, "
-                        "previously validated steps, and the designated step under review."
-                    )
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        "Analyze the feedback provided below in the context of the problem and the previously validated steps. "
-                        "**Problem:**\n" + problem + "\n\n"
-                        "**Reasoning paths:**\n" + "\n".join(f"<STEP>{step}</STEP>" for step in current_step) + "\n\n"
-                        "**Designated Step Under Review:**\n<STEP>" + current_step[-1] + "</STEP>\n\n"
-                        "**Feedback Provided:**\n" + feedback + "\n\n"
-                        "Verify the feedback, and then conclude on the final line with exactly one of these statements:\n"
-                        "'The feedback is valid.' or 'The feedback is invalid.'"
-                    )
-                },
-                {
-                    "role": "assistant",
-                    "content": (
-                        "Analysis:\n"
+                "role": "system",
+                "content": (
+                    "You are a math expert reviewing a specific step in a math problem. "
+                    "Focus solely on evaluating whether the step demonstrates a clear understanding of the problem. "
+                    "If the step shows clear understanding, simply output: 'Step demonstrates clear understanding.' "
+                    "If there is a critical or major lack of understanding (one that significantly impacts the ability to solve the problem), output: 'Step does not demonstrate clear understanding.' Then briefly explain why and suggest improvements. "
+                    "Do not comment on calculation correctness or logical alignment."
+                    "Avoid providing feedback unless the error is critical or major."
                     )
                 }
             ]
 
-            feedback_choose_chat = self.tokenize_chat(feedback_verification_prompt)
-            feedback_choose_output = self.generate_output(feedback_choose_chat)
-            feedback_choose_decoded = self.decode_output(feedback_choose_output, False)
-            # print("feedback_choose_decoded : ", feedback_choose_decoded)
-            # print("\n\n******************\n\n")
-            feedback_choose_result = feedback_choose_decoded.split("Analysis:")[-1].strip()
-            # if feedback is invalid just continue to the next step. If feedback is valid, use it to refine the solution
-            if "the feedback is invalid" in feedback_choose_result.lower():
+            feedback_responses = []
+
+            for prompt in feedback_prompts:
+                feedback_prompt = [
+                    prompt,
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Here is the cuurent reasoning path for the problem:\n\n"
+                            f"Problem: {problem}\n\n"
+                            f"Steps:\n" + "\n".join(f"<STEP>{step}</STEP>" for step in current_step)
+                        )
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "Yes, I got it. What step should I feedback on?"
+                    },
+                    {
+                        "role": "user",
+                        "content": f"<STEP>{current_step[step_index - 1]}</STEP>"
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "Feedback:\n"
+                    }
+                ]
+
+                tokenized_chat = self.tokenize_chat(feedback_prompt)
+                output = self.generate_output(tokenized_chat, True, 0.2)
+                decoded_feedback = self.decode_output(output, False).split("Feedback:")[-1].strip()
+                feedback_responses.append(decoded_feedback)
+
+            valid_feedbacks = []  # to store only the approved feedback responses
+            for i, fb in enumerate(feedback_responses.copy()):  # iterate over a copy to allow removal
+                feedback_verification_prompt = [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are an expert in mathematical reasoning, specializing in verifying feedback provided for individual steps in a problem-solving process. "
+                            "You are provided with the following context: the original problem statement, previously validated reasoning steps, "
+                            "the designated step under review, the expert feedback regarding that step, and one forward-looking step that outlines potential next steps in solving the problem. "
+                            "Your task is to evaluate whether the feedback accurately identifies errors or issues (such as calculation mistakes, logical inconsistencies, or unclear understanding) "
+                            "in the designated step without altering elements that are already correct. Additionally, assess whether the feedback aligns with the forward-looking step and supports progress toward solving the problem. "
+                            "Based solely on this analysis, output exactly one of the following statements as your final response: 'The feedback is valid.' or 'The feedback is invalid.' "
+                            "Do not include any additional commentary or extraneous text."
+                        )
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"**Problem:**\n{problem}\n\n"
+                            f"**Reasoning Paths:**\n" + "\n".join(f"<STEP>{step}</STEP>" for step in current_step) + "\n\n"
+                            f"**Designated Step Under Review:**\n<STEP>{current_step[step_index - 1]}</STEP>\n\n"
+                            f"**Feedback Provided:**\n{fb}\n\n"
+                            "Verify the above feedback and output only one of the following as the final line:\n"
+                            "'The feedback is valid.' or 'The feedback is invalid.'"
+                        )
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "Analysis:\n"
+                    }
+                ]
+                tokenized_verification = self.tokenize_chat(feedback_verification_prompt)
+                verification_output = self.generate_output(tokenized_verification)
+                verification_result = self.decode_output(verification_output, False).split("Analysis:")[-1].strip()
+                if "feedback is valid" in verification_result.lower():
+                    valid_feedbacks.append(fb)
+
+            # Check if final_feedback indicates no additional changes required
+            # If no valid feedback remains, skip refinement
+            if not valid_feedbacks:
                 reject_count += 1
                 step_index += 1
                 continue
+            
+            feedback = "; ".join(valid_feedbacks)
+            # Append final feedback result
+            result_pairs.append({"feedback": feedback})
+            # print(f"Feedback: {feedback}")
+            # print("\n\n******************\n\n")
 
             # print("refining")
 
@@ -354,7 +310,7 @@ Reasoning step-by-step:
                     "role": "system",
                     "content": (
                         "You are refining a problem-solving step based on expert feedback. "
-                        "Your task is to correct **only** the specific step identified in the feedback, "
+                        "Your task is to refine **only** the specific step identified in the feedback, "
                         "while keeping all previously validated steps unchanged. "
                         "Ensure that your correction strictly addresses the identified error **without modifying correct logic**. "
                     )
@@ -395,17 +351,17 @@ Reasoning step-by-step:
             continuation_prompt = few_shot_examples + [
                 {
                     "role": "user",
-                    "content": "Follow the format of the previous solutions. Solve this math problem step by step. Problem : \n" + problem,
+                    "content": "Solve this math problem step by step. Problem : \n" + problem,
                 },
                 {
                     "role": "assistant",
-                    "content": "Reasoning step-by-step:\n" + previous_steps + "<ANSWER>"
+                    "content": "Reasoning step-by-step:\n" + previous_steps
                 }
             ]
 
             continuation_tokenized_chat = self.tokenize_chat(continuation_prompt)
             continuation_output = self.generate_output(continuation_tokenized_chat)
-            outputs_confidence = self.generate_with_confidence(continuation_tokenized_chat)
+            # outputs_confidence = self.generate_with_confidence(continuation_tokenized_chat)
 
             continued_result = self.decode_output(continuation_output, False).split("Reasoning step-by-step:")[-1]
             continued_steps = re.findall(r"<STEP>(.*?)</STEP>", continued_result, re.DOTALL)
@@ -415,7 +371,8 @@ Reasoning step-by-step:
             # print("continued answer confidence : ", outputs_confidence, ", Answer :", continued_answer)
             # print("--------------------")
 
-            result_pairs.append({"reasoning_path": continued_result, "answer": continued_answer, "confidence": outputs_confidence})
+            # result_pairs.append({"reasoning_path": continued_result, "answer": continued_answer, "confidence": outputs_confidence})
+            result_pairs.append({"reasoning_path": continued_result, "answer": continued_answer})
             step_index += 1
             # print(f"Refined Solution: {result}")
             # print("\n\n******************\n\n")
@@ -451,7 +408,7 @@ Reasoning step-by-step:
         header = [str(i) for i in range(num_columns)]
 
         # Write to CSV file in append mode.
-        log_file = "results_no_veri.csv"
+        log_file = "results_divide_feedback.csv"
         write_header = not os.path.exists(log_file) or os.stat(log_file).st_size == 0
 
         with open(log_file, "a", newline="", encoding="utf-8") as csvfile:
@@ -465,7 +422,7 @@ Reasoning step-by-step:
             candidate for candidate in cleaned_result_pairs if "answer" in candidate
         ]
 
-        best_result = max(processed_result, key=lambda x: x["confidence"])
+        best_result = processed_result[-1]  # The last element is the best result
         return [intial_answer, best_result['answer'], reject_count, len(steps) - pass_count, len(steps)] # reject된 피드백의 개수, valid한 피드백의 개수, 전체 step의 개수
 
 
@@ -477,7 +434,10 @@ if __name__ == "__main__":
     few_shot_examples_GSM8K = [
       {
         "role": "system",
-        "content": "You are a helpful assistant that solves math problems step by step. Follow the examples provided and solve the given problem logically."
+        "content": "You are a helpful assistant that solves math problems step by step. "
+        "For every reasoning step, enclose your output exactly within the <STEP> and </STEP> tags. "
+        "Your final answer value must be provided enclosed within the <ANSWER> and </ANSWER> tags. "
+        "IMPORTANT: Do not include any additional text outside these tags."
       },
       {
         "role": "user",
@@ -533,7 +493,8 @@ Finally, calculate how much more Betty needs by subtracting the total money she 
 
     # Answer = 70,000, 80000 * 2.5 - 80000 - 50000
     problem = "Josh decides to try flipping a house.  He buys a house for $80,000 and then puts in $50,000 in repairs.  This increased the value of the house by 150%.  How much profit did he make?"
+    # Answer 2 = 31, 25 + 5+ 1
     problem2 = "Ram uses a lot of pens. He discovered that he can save money by mixing the ink from five empty pens to make one full pen. If he buys 25 pens and then uses them to make new pens when the ink runs low, how many total pens does he get to have?"
-    solution = solver.solve_problem(problem, few_shot_examples_GSM8K)
+    solution = solver.solve_problem(problem2, few_shot_examples_GSM8K)
     print(solution)
 
