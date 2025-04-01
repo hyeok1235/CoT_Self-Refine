@@ -77,15 +77,23 @@ class MathProblemSolver:
     def generate_output(self, tokenized_chat, do_sample: bool = False, temperature: float = 0.0, max_new_tokens: int = 1024):
         # Move tokenized_chat tensor to the correct device
         tokenized_chat = tokenized_chat.to(self.model.device)
-        return self.model.generate(
-            tokenized_chat,  # Passing the tensor directly
-            max_new_tokens=max_new_tokens,
-            pad_token_id=self.tokenizer.pad_token_id,
-            do_sample=do_sample,
-            temperature=temperature
-        )
+        if do_sample == False:
+            return self.model.generate(
+                tokenized_chat,  # Passing the tensor directly
+                max_new_tokens=max_new_tokens,
+                pad_token_id=self.tokenizer.pad_token_id,
+                do_sample=do_sample
+            )
+        else:
+            return self.model.generate(
+                tokenized_chat,  # Passing the tensor directly
+                max_new_tokens=max_new_tokens,
+                pad_token_id=self.tokenizer.pad_token_id,
+                do_sample=do_sample,
+                temperature=temperature
+            )
     
-    def generate_with_confidence(self, tokenized_input, do_sample: bool = False, temperature: float = 0.0, max_new_tokens: int = 1024):
+    def generate_with_confidence(self, tokenized_input, do_sample: bool = True, temperature: float = 0.1, max_new_tokens: int = 1024):
         # return_dict_in_generate와 output_scores를 True로 설정합니다.
         outputs = self.model.generate(
             tokenized_input.to(self.model.device),
@@ -180,117 +188,278 @@ Reasoning step-by-step:
 
             # if forward_step_index is larger than the number of steps, we give full steps. Otherwise, we give steps up to forward_step_index
             current_step = steps[:forward_step_index] if forward_step_index <= len(steps) else steps
-
             # --- FEEDBACK PROMPT ---
-            # Define three distinct feedback prompts
+            # The original feedback prompts remain unchanged.
+
             feedback_prompts = [
-                {
-                "role": "system",
-                "content": (
-                    "You are a math expert reviewing a specific step in a math problem. "
-                    "Focus solely on identifying calculation errors (e.g., arithmetic or algebraic manipulation mistakes). "
-                    "If there are no calculation errors, simply output: 'Step is mathematically correct.' "
-                    "If a critical or major calculation error is present (one that significantly impacts the validity of the step), output: 'Step is mathematically incorrect.' Then briefly explain the error and suggest a correction."
-                    "Do not comment on logical alignment or overall problem understanding."
-                    "Avoid providing feedback unless the error is critical or major."
-                    )
-                },
-                {
-                "role": "system",
-                "content": (
-                    "You are a math expert reviewing a specific step in a math problem. "
-                    "Your task is exclusively to assess whether the step logically follows from the previous reasoning. "
-                    "If the step logically follows, simply output: 'Step aligns logically.' "
-                    "If there is a critical or major misalignment (one that significantly impacts the logical flow of reasoning), output: 'Step does not align logically.' Then briefly describe the discrepancy and recommend how to fix it."
-                    "Do not address calculation accuracy or conceptual understanding."
-                    "Avoid providing feedback unless the error is critical or major."
-                    )
-                },
-                {
-                "role": "system",
-                "content": (
-                    "You are a math expert reviewing a specific step in a math problem. "
-                    "Focus solely on evaluating whether the step demonstrates a clear understanding of the problem. "
-                    "If the step shows clear understanding, simply output: 'Step demonstrates clear understanding.' "
-                    "If there is a critical or major lack of understanding (one that significantly impacts the ability to solve the problem), output: 'Step does not demonstrate clear understanding.' Then briefly explain why and suggest improvements. "
-                    "Do not comment on calculation correctness or logical alignment."
-                    "Avoid providing feedback unless the error is critical or major."
-                    )
-                }
+                [  # Section 1: Calculation Errors
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a mathematics expert identifying critical calculation errors. Examine the designated step for:"
+                            "\n- Severe arithmetic miscalculations"
+                            "\n- Fundamental algebraic errors"
+                            "\n- Incorrect formula applications"
+                            "\nIf you find such errors, respond with: 'Feedback: Critical calculation error detected.' Then:"
+                            "1. Clearly state the mathematical law/rule violated"
+                            "2. Show the incorrect vs correct calculation"
+                            "3. Explain the impact on final answer"
+                            "\nIf the step is correct and no critical issues are found, it's crucial to respond with: 'Feedback: No critical errors found.'"
+                            "\nIf you notice minor issues or nitpicks that don't significantly impact the solution, also respond with: 'Feedback: No critical errors found.'"
+                        )
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            "Here is the current reasoning path for the problem:\n\n"
+                            "Problem: Calculate the average score of a math test with the following scores: 85, 90, 75, and 80.\n\n"
+                            "Steps:\n"
+                            "Step 1: List all the test scores: 85, 90, 75, and 80.\n"
+                            "Step 2: Add all the scores together: 85 + 90 + 75 + 80 = 330.\n"
+                            "Step 3: Count the total number of scores, which is 4.\n"
+                            "Step 4: Divide the sum by the count to get the average: 330 ÷ 4 = 82.5.\n"
+                            "Feedback on this step: Step 3: Count the total number of scores, which is 4.\n"
+                        )
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "Feedback: No critical errors found."
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            "Here is the current reasoning path for the problem:\n\n"
+                            "Problem: Max bought 3 notebooks at $4.50 each and 2 pens at $0.75 each. Calculate the total cost.\n\n"
+                            "Steps:\n"
+                            "Step 1: Identify the items and their costs: 3 notebooks at $4.50 each and 2 pens at $0.75 each.\n"
+                            "Step 2: Calculate the cost of notebooks: 3 × $4.50 = $13.50.\n"
+                            "Step 3: Calculate the cost of pens: 2 × $0.75 = $1.50.\n"
+                            "Step 4: Add the costs together: $13.50 + $1.50 = $15.50.\n"
+                            "Step 5: The total cost is $15.50.\n"
+                            "Feedback on this step: Step 4: Add the costs together: $13.50 + $1.50 = $15.50.\n"
+                        )
+                    },
+                    {
+                        "role": "assistant",
+                        "content": (
+                            "Feedback: Critical calculation error detected. The correct sum of $13.50 and $1.50 is $15.00, not $15.50. "
+                            "This miscalculation inflates the total cost and affects the final answer."
+                        )
+                    }
+                ],
+                [  # Section 2: Problem Interpretation Errors
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a problem-solving expert detecting fundamental misinterpretations. Flag only:"
+                            "\n- Misidentification of core problem requirements"
+                            "\n- Incorrect assumptions changing problem meaning"
+                            "\n- Missing critical problem constraints"
+                            "\nIf detected, respond with: 'Feedback: Critical misinterpretation detected.' Then:"
+                            "1. Quote the misunderstood problem component"
+                            "2. Explain the distorted understanding"
+                            "3. Provide the accurate interpretation"
+                            "\nIgnore: Alternative valid interpretations or minor phrasing disagreements."
+                            "\nIf the step is correct and no critical issues are found, it's crucial to respond with: 'Feedback: No critical errors found.'"
+                            "\nIf you notice minor issues or nitpicks that don't significantly impact the solution, also respond with: 'Feedback: No critical errors found.'"
+                        )
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            "Here is the current reasoning path for the problem:\n\n"
+                            "Problem: A pizza originally costs $20 and is offered at a 25% discount. What is the sale price?\n\n"
+                            "Steps:\n"
+                            "Step 1: Identify the original price, which is $20.\n"
+                            "Step 2: Calculate the discount amount as 25% of $20: 0.25 × $20 = $5.\n"
+                            "Step 3: Add the discount to the original price: $20 + $5 = $25.\n"
+                            "Step 4: Conclude that the sale price is $25.\n"
+                            "Feedback on this step: Step 3: Add the discount to the original price: $20 + $5 = $25.\n"
+                        )
+                    },
+                    {
+                        "role": "assistant",
+                        "content": (
+                            "Feedback: Critical misinterpretation detected. The step incorrectly adds the discount to the original price instead of subtracting it. "
+                            "A discount reduces the price, so the calculation should be $20 - $5 = $15."
+                        )
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            "Here is the current reasoning path for the problem:\n\n"
+                            "Problem: John has 5 apples and gives 2 to Mary. How many apples does he have left?\n\n"
+                            "Steps:\n"
+                            "Step 1: Start with John's initial number of apples, which is 5.\n"
+                            "Step 2: Determine that John gives away 2 apples to Mary.\n"
+                            "Step 3: Subtract the number of apples given away from the initial amount: 5 - 2 = 3.\n"
+                            "Step 4: Conclude that John has 3 apples remaining.\n"
+                            "Feedback on this step: Step 3: Subtract the number of apples given away from the initial amount: 5 - 2 = 3.\n"
+                        )
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "Feedback: No critical errors found."
+                    }
+                ],
+                [  # Section 3: Logical Consistency Between Steps
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a logic expert identifying solution-breaking inconsistencies. Flag only:"
+                            "\n- Contradictions with previous validated steps"
+                            "\n- Invalid logical leaps (missing necessary intermediate steps)"
+                            "\n- Violations of mathematical proof principles"
+                            "\nIf found, respond with: 'Feedback: Critical inconsistency detected.' Then:"
+                            "1. Identify the exact logical fracture point"
+                            "2. Show the chain break using previous steps"
+                            "3. Provide the minimum correction needed"
+                            "\nIgnore: Stylistic variations in reasoning."
+                            "\nIf the step is correct and no critical issues are found, it's crucial to respond with: 'Feedback: No critical errors found.'"
+                            "\nIf you notice minor issues or nitpicks that don't significantly impact the solution, also respond with: 'Feedback: No critical errors found.'"
+                        )
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            "Here is the current reasoning path for the problem:\n\n"
+                            "Problem: Calculate the area and perimeter of a rectangle with dimensions 8 cm by 5 cm.\n\n"
+                            "Steps:\n"
+                            "Step 1: Identify the rectangle's dimensions as 8 cm length and 5 cm width.\n"
+                            "Step 2: Calculate the area using the formula: Area = length × width.\n"
+                            "Step 3: Substitute the values to find the area: 8 cm × 5 cm = 40 square cm.\n"
+                            "Step 4: For the perimeter, incorrectly add the dimensions: 8 cm + 5 cm = 13 cm as the perimeter.\n"
+                            "Step 5: Conclude that the area is 40 square cm and the perimeter is 13 cm.\n"
+                            "Feedback on this step: Step 4: For the perimeter, incorrectly add the dimensions: 8 cm + 5 cm = 13 cm as the perimeter.\n"
+                        )
+                    },
+                    {
+                        "role": "assistant",
+                        "content": (
+                            "Feedback: Critical inconsistency detected. The perimeter of a rectangle is calculated by adding twice the length and twice the width (2l + 2w), "
+                            "not by simply adding the dimensions. The correct perimeter is 2 × 8 + 2 × 5 = 16 + 10 = 26 cm, not 13 cm."
+                        )
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            "Here is the current reasoning path for the problem:\n\n"
+                            "Problem: Calculate the area of a triangle with base 10 cm and height 8 cm.\n\n"
+                            "Steps:\n"
+                            "Step 1: Identify the triangle's base as 10 cm and height as 8 cm.\n"
+                            "Step 2: Recall the formula for the area of a triangle: Area = (1/2) × base × height.\n"
+                            "Step 3: Substitute the values into the formula: Area = (1/2) × 10 cm × 8 cm.\n"
+                            "Step 4: Calculate: Area = (1/2) × 80 square cm = 40 square cm.\n"
+                            "Step 5: Conclude that the triangle's area is 40 square cm.\n"
+                            "Feedback on this step: Step 4: Calculate: Area = (1/2) × 80 square cm = 40 square cm.\n"
+                        )
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "Feedback: No critical errors found."
+                    }
+                ]
             ]
 
             feedback_responses = []
 
             for prompt in feedback_prompts:
-                feedback_prompt = [
-                    prompt,
+                feedback_prompt = prompt + [
                     {
                         "role": "user",
                         "content": (
-                            f"Here is the cuurent reasoning path for the problem:\n\n"
+                            f"Here is the current reasoning path for the problem:\n\n"
                             f"Problem: {problem}\n\n"
-                            f"Steps:\n" + "\n".join(f"<STEP>{step}</STEP>" for step in current_step)
+                            f"Steps:\n" + "\n".join(f"<STEP>{step}</STEP>" for step in current_step) +
+                            f"Feedback on this step: <STEP>{current_step[step_index - 1]}</STEP>\n"
                         )
                     },
-                    {
-                        "role": "assistant",
-                        "content": "Yes, I got it. What step should I feedback on?"
-                    },
-                    {
-                        "role": "user",
-                        "content": f"<STEP>{current_step[step_index - 1]}</STEP>"
-                    },
-                    {
-                        "role": "assistant",
-                        "content": "Feedback:\n"
-                    }
+                    {"role": "assistant", "content": "Feedback:"}
                 ]
 
                 tokenized_chat = self.tokenize_chat(feedback_prompt)
-                output = self.generate_output(tokenized_chat, True, 0.2)
-                decoded_feedback = self.decode_output(output, False).split("Feedback:")[-1].strip()
+                output = self.generate_output(tokenized_chat)
+                decoded_feedback = self.decode_output(output, False).split("Feedback:")[-1].strip().split("<|eot_id|>")[0].strip()
+
+                if "no critical errors found" in decoded_feedback.lower():
+                    continue
                 feedback_responses.append(decoded_feedback)
+            
+            if feedback_responses == []:
+                pass_count += 1
+                step_index += 1
+                continue
+
+            # Define three different verification system prompts.
+            verification_system_prompts = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are verifying feedback about calculation errors. Determine if the feedback:"
+                        "\n1. Correctly identifies a genuine calculation error (arithmetic, algebraic, or mathematical manipulation)"
+                        "\n2. Provides the correct mathematical solution"
+                        "\n3. Does not falsely flag correct calculations as errors"
+                        "\nIf the feedback accurately identifies a real calculation error, reply with: 'The feedback is valid.'"
+                        "\nOtherwise, reply with: 'The feedback is invalid.'"
+                    )
+                },
+                {
+                    "role": "system",
+                    "content": (
+                        "You are verifying feedback about problem interpretation. Determine if the feedback:"
+                        "\n1. Correctly identifies a genuine misunderstanding of what the problem is asking"
+                        "\n2. Accurately explains how the step misinterprets the problem requirements"
+                        "\n3. Does not falsely flag correct interpretations as misunderstandings"
+                        "\nIf the feedback accurately identifies a real problem interpretation error, reply with: 'The feedback is valid.'"
+                        "\nOtherwise, reply with: 'The feedback is invalid.'."
+                    )
+                },
+                {
+                    "role": "system",
+                    "content": (
+                        "You are verifying feedback about logical consistency between steps. Determine if the feedback:"
+                        "\n1. Correctly identifies a genuine logical inconsistency with previous steps"
+                        "\n2. Accurately explains why the step doesn't align with the solution approach"
+                        "\n3. Does not falsely flag logically consistent steps as errors"
+                        "\nIf the feedback accurately identifies a real logical inconsistency, reply with: 'The feedback is valid.'"
+                        "\nOtherwise, reply with: 'The feedback is invalid.'"
+                    )
+                },
+            ]
 
             valid_feedbacks = []  # to store only the approved feedback responses
-            for i, fb in enumerate(feedback_responses.copy()):  # iterate over a copy to allow removal
+
+            # For every feedback response, run it through each verification system prompt.
+            for i, fb in enumerate(feedback_responses.copy()):
                 feedback_verification_prompt = [
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are an expert in mathematical reasoning, specializing in verifying feedback provided for individual steps in a problem-solving process. "
-                            "You are provided with the following context: the original problem statement, previously validated reasoning steps, "
-                            "the designated step under review, the expert feedback regarding that step, and one forward-looking step that outlines potential next steps in solving the problem. "
-                            "Your task is to evaluate whether the feedback accurately identifies errors or issues (such as calculation mistakes, logical inconsistencies, or unclear understanding) "
-                            "in the designated step without altering elements that are already correct. Additionally, assess whether the feedback aligns with the forward-looking step and supports progress toward solving the problem. "
-                            "Based solely on this analysis, output exactly one of the following statements as your final response: 'The feedback is valid.' or 'The feedback is invalid.' "
-                            "Do not include any additional commentary or extraneous text."
-                        )
-                    },
+                    verification_system_prompts[i],
                     {
                         "role": "user",
                         "content": (
-                            f"**Problem:**\n{problem}\n\n"
-                            f"**Reasoning Paths:**\n" + "\n".join(f"<STEP>{step}</STEP>" for step in current_step) + "\n\n"
-                            f"**Designated Step Under Review:**\n<STEP>{current_step[step_index - 1]}</STEP>\n\n"
-                            f"**Feedback Provided:**\n{fb}\n\n"
-                            "Verify the above feedback and output only one of the following as the final line:\n"
-                            "'The feedback is valid.' or 'The feedback is invalid.'"
+                            "Now verify the feedback provided below."
+                            f"Problem: {problem}\n\n"
+                            f"Previously validated steps: " + "\n".join(f"<STEP>{step}</STEP>" for step in current_step[:step_index - 1]) + "\n\n"
+                            f"Designated Step Under Review: <STEP>{current_step[step_index - 1]}</STEP>\n\n"
+                            f"Forward-looking Step: <STEP>{current_step[-1]}</STEP>\n\n"
+                            f"Feedback Provided: {fb}\n\n"
+                            "Evaluate the feedback and respond as instructed."
                         )
                     },
                     {
-                        "role": "assistant",
-                        "content": "Analysis:\n"
+                    "role": "assistant",
+                    "content": "The feedback is"
                     }
                 ]
                 tokenized_verification = self.tokenize_chat(feedback_verification_prompt)
                 verification_output = self.generate_output(tokenized_verification)
-                verification_result = self.decode_output(verification_output, False).split("Analysis:")[-1].strip()
+                verification_result = self.decode_output(verification_output, False).split("Evaluate the feedback and respond as instructed.")[-1].strip()
                 if "feedback is valid" in verification_result.lower():
-                    valid_feedbacks.append(fb)
+                    valid_feedbacks.append(fb.split("<|eot_id|>")[0])
+
 
             # Check if final_feedback indicates no additional changes required
             # If no valid feedback remains, skip refinement
-            if not valid_feedbacks:
+            if valid_feedbacks == []:
                 reject_count += 1
                 step_index += 1
                 continue
@@ -318,11 +487,12 @@ Reasoning step-by-step:
                 {
                     "role": "user",
                     "content": (
-                        f"Refine last step only, based on the feedback provided below.\n\n"
+                        f"Refine specific step only, based on the feedback provided below.\n\n"
                         "**Problem:** " + problem + "\n\n"
                         "**Reasoning step-by-step (before refinement):**\n"
-                        + "\n".join(f"<STEP>{step}</STEP>" for step in current_step[:step_index]) +
-                        f"\n\n**Feedback on last step :** {feedback}\n\n"
+                        + "\n".join(f"<STEP>{step}</STEP>" for step in current_step[:forward_step_index]) +
+                        f"Step to refine : <STEP>{current_step[step_index - 1]}</STEP>"
+                        f"\n\n**Feedback on the step to refine : {feedback}\n\n"
                         "**Provide the corrected step below without modifying other correct steps.**"
                     )
                 },
@@ -330,8 +500,8 @@ Reasoning step-by-step:
                     "role": "assistant",
                     "content": (
                         "**Refined Reasoning Step-by-Step:**\n"
-                        + "\n".join(f"<STEP>{step}</STEP>" for step in current_step[:step_index - 1]) +  # Keep previous steps unchanged
-                        "<STEP>"  # This signals where the refined step will be inserted
+                        + "\n".join(f"<STEP>{step}</STEP>" for step in current_step[:step_index - 1]) # Keep previous steps unchanged
+                        + "<STEP>"
                     )
                 }
             ]
@@ -441,7 +611,8 @@ if __name__ == "__main__":
       },
       {
         "role": "user",
-        "content": "Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How many clips did Natalia sell altogether in April and May?"
+        "content": ("Solve this math problem step by step. Problem : \n"
+        "Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How many clips did Natalia sell altogether in April and May?")
       },
       {
         "role": "assistant",
@@ -462,7 +633,9 @@ To find the total number of clips sold in April and May, we add the clips sold i
       },
       {
         "role": "user",
-        "content": "Betty is saving money for a new wallet which costs $100. Betty has only half of the money she needs. Her parents decided to give her $15 for that purpose, and her grandparents twice as much as her parents. How much more money does Betty need to buy the wallet?"
+        "content": ("Solve this math problem step by step. Problem : \n"
+                    "Betty is saving money for a new wallet which costs $100. Betty has only half of the money she needs. Her parents decided to give her $15 for that purpose, and her grandparents twice as much as her parents. How much more money does Betty need to buy the wallet?"
+                )
       },
       {
         "role": "assistant",
@@ -495,6 +668,8 @@ Finally, calculate how much more Betty needs by subtracting the total money she 
     problem = "Josh decides to try flipping a house.  He buys a house for $80,000 and then puts in $50,000 in repairs.  This increased the value of the house by 150%.  How much profit did he make?"
     # Answer 2 = 31, 25 + 5+ 1
     problem2 = "Ram uses a lot of pens. He discovered that he can save money by mixing the ink from five empty pens to make one full pen. If he buys 25 pens and then uses them to make new pens when the ink runs low, how many total pens does he get to have?"
+    # Answer 3 = 60
+    problem3 = "Rita hand-picks Junebugs off of her plants every summer.  On Monday, she removed 39 Junebugs.  On both Tuesday and Wednesday, she removed twice as many Junebugs as she did on Monday.  Thursday she removed 48 and on Friday she removed 57.  What is the average number of Junebugs that she removes per day?"
     solution = solver.solve_problem(problem2, few_shot_examples_GSM8K)
     print(solution)
 
