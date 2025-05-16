@@ -7,7 +7,7 @@ import re
 import csv
 
 class MathProblemSolver:
-    def __init__(self, model_name: str, cuda_devices: str = "0,1", quantization_bits: Optional[int] = 4):
+    def __init__(self, model_name: str, cuda_devices: str = "2,3", quantization_bits: Optional[int] = 4):
         self.model_name = model_name
         self.tokenizer = None
         self.model = None
@@ -129,11 +129,53 @@ class MathProblemSolver:
         # Return the average log confidence and perplexity for reference.
         return log_confidence.mean().item()
 
-    def decode_output(self, outputs, skip_sepcial_tokens):
+    def decode_output(self, outputs, skip_special_tokens):
         """
         Decode the generated output.
         """
-        return self.tokenizer.decode(outputs[0], skip_special_tokens=skip_sepcial_tokens)
+        return self.tokenizer.decode(outputs[0], skip_special_tokens=skip_special_tokens)
+
+    
+    def extract_or_request_answer(
+        self,
+        reasoning: str,
+        problem: str,
+        max_new_tokens: int = 100
+    ) -> str:
+        """
+        1) Try to extract text between <ANSWER> and </ANSWER> in `reasoning`.
+        2) If not found, re-prompt the model to produce only the final answer wrapped in <ANSWER> tags.
+        """
+        # Attempt extraction
+        match = re.search(r'<ANSWER>(\d+)', reasoning)
+        if match:
+            return match.group(1).strip()
+
+        # Fallback: ask the model directly for the answer
+        final_prompt = [
+            {
+                "role": "user",
+                "content": (
+                    "Please provide only the final answer for the problem below, "
+                    "and wrap it in <ANSWER> and </ANSWER> tags. Do not include any reasoning.\n\n"
+                    f"Problem:\n{problem}"
+                    f"\n\nReasoning:\n{reasoning}"
+                )
+            },
+            {
+                "role": "assistant",
+                "content": (
+                    "<ANSWER>"
+                )
+            }
+        ]
+        tokenized = self.tokenize_chat(final_prompt)
+        outputs = self.generate_output(tokenized, max_new_tokens=max_new_tokens)
+        text = self.decode_output(outputs, skip_special_tokens=True)
+        # print(text)
+        # Extract once more from the new output
+        match = text.split("<ANSWER>")[-1]
+        return match
 
     def solve_problem(self, problem: str, few_shot_examples: List[Dict]):
         """
@@ -163,16 +205,19 @@ Reasoning step-by-step:
         forward_look = 1
         pass_count = 0
         reject_count = 0
+        feedback_count = 0
+        major_feedback_count = 0
+        valid_feedback_count = 0
         result_pairs = []
 
-        intial_answer = result.split("<ANSWER>")[-1].split("</ANSWER>")[0].strip()
+        initial_answer = self.extract_or_request_answer(result, problem)
 
-        # print("initial answer confidence : ", outputs_confidence, ", Answer :", intial_answer)
+        # print("initial answer confidence : ", outputs_confidence, ", Answer :", initial_answer)
         # print("--------------------")
 
         result_pairs.append({"question" : problem})
         # result_pairs.append({"reasoning_path": result, "answer": intial_answer, "confidence": outputs_confidence})
-        result_pairs.append({"reasoning_path": result, "answer": intial_answer})
+        result_pairs.append({"reasoning_path": result, "answer": initial_answer})
         # print(f"Initial Solution: {result}")
         # print("\n\n******************\n\n")
 
@@ -188,6 +233,13 @@ Reasoning step-by-step:
 
             # if forward_step_index is larger than the number of steps, we give full steps. Otherwise, we give steps up to forward_step_index
             current_step = steps[:forward_step_index] if forward_step_index <= len(steps) else steps
+
+            # if the step is repeating, jump to conclusion
+            if step_index > 2 and steps[step_index - 1] == steps[step_index - 2]:
+                answer = self.extract_or_request_answer(result, problem)
+                result_pairs.append({"reasoning_path": result, "answer": answer})
+                break
+            
             # --- FEEDBACK PROMPT ---
             # The original feedback prompts remain unchanged.
 
@@ -196,16 +248,17 @@ Reasoning step-by-step:
                     {
                         "role": "system",
                         "content": (
-                            "You are a mathematics expert identifying critical calculation errors. Examine the designated step for:"
+                            "You are a mathematics expert evaluating calculation accuracy. Your primary task is to determine whether each step is mathematically correct or contains critical errors. Check if there are:"
                             "\n- Severe arithmetic miscalculations"
                             "\n- Fundamental algebraic errors"
                             "\n- Incorrect formula applications"
-                            "\nIf you find such errors, respond with: 'Feedback: Critical calculation error detected.' Then:"
+                            "\nIf the step is correct, start with: 'Feedback: No critical errors found.' Then briefly explain why the calculation is mathematically valid and how it correctly follows from previous steps."
+                            "\nIf you find such errors, start with: 'Feedback: Critical calculation error detected.' Then:"
                             "1. Clearly state the mathematical law/rule violated"
                             "2. Show the incorrect vs correct calculation"
                             "3. Explain the impact on final answer"
-                            "\nIf the step is correct and no critical issues are found, it's crucial to respond with: 'Feedback: No critical errors found.'"
-                            "\nIf you notice minor issues or nitpicks that don't significantly impact the solution, also respond with: 'Feedback: No critical errors found.'"
+                            "\n A step after the current step is given as a forward-looking step for context only. Focus your feedback solely on the specifically designated step."
+                            "\n It's crucial to avoid false positives. Only flag a step as containing a critical error when you are 100% certain. Mathematical steps may have minor imperfections while still being technically correct. For any minor issues or doubts, default to 'Feedback: No critical errors found.'"
                         )
                     },
                     {
@@ -214,16 +267,16 @@ Reasoning step-by-step:
                             "Here is the current reasoning path for the problem:\n\n"
                             "Problem: Calculate the average score of a math test with the following scores: 85, 90, 75, and 80.\n\n"
                             "Steps:\n"
-                            "Step 1: List all the test scores: 85, 90, 75, and 80.\n"
-                            "Step 2: Add all the scores together: 85 + 90 + 75 + 80 = 330.\n"
-                            "Step 3: Count the total number of scores, which is 4.\n"
-                            "Step 4: Divide the sum by the count to get the average: 330 ÷ 4 = 82.5.\n"
-                            "Feedback on this step: Step 3: Count the total number of scores, which is 4.\n"
+                            "<STEP>List all the test scores: 85, 90, 75, and 80.</STEP>"
+                            "<STEP>Add all the scores together: 85 + 90 + 75 + 80 = 330.</STEP>"
+                            "<STEP>Count the total number of scores, which is 4.</STEP>"
+                            "<STEP>Divide the sum by the count to get the average: 330 ÷ 4 = 82.5.</STEP>"
+                            "Feedback on this step: <STEP>Count the total number of scores, which is 4.</STEP>"
                         )
                     },
                     {
                         "role": "assistant",
-                        "content": "Feedback: No critical errors found."
+                        "content": "Feedback: No critical errors found. All steps adhere to the proper arithmetic and logic, and the solution is consistent."
                     },
                     {
                         "role": "user",
@@ -231,19 +284,18 @@ Reasoning step-by-step:
                             "Here is the current reasoning path for the problem:\n\n"
                             "Problem: Max bought 3 notebooks at $4.50 each and 2 pens at $0.75 each. Calculate the total cost.\n\n"
                             "Steps:\n"
-                            "Step 1: Identify the items and their costs: 3 notebooks at $4.50 each and 2 pens at $0.75 each.\n"
-                            "Step 2: Calculate the cost of notebooks: 3 × $4.50 = $13.50.\n"
-                            "Step 3: Calculate the cost of pens: 2 × $0.75 = $1.50.\n"
-                            "Step 4: Add the costs together: $13.50 + $1.50 = $15.50.\n"
-                            "Step 5: The total cost is $15.50.\n"
-                            "Feedback on this step: Step 4: Add the costs together: $13.50 + $1.50 = $15.50.\n"
+                            "<STEP>Identify the items and their costs: 3 notebooks at $4.50 each and 2 pens at $0.75 each.</STEP>"
+                            "<STEP>Calculate the cost of notebooks: 3 x $4.50 = $13.50.</STEP>"
+                            "<STEP>Calculate the cost of pens: 2 x $0.75 = $1.50.</STEP>"
+                            "<STEP>Add the costs together: $13.50 + $1.50 = $15.50.</STEP>"
+                            "<STEP>The total cost is $15.50.</STEP>"
+                            "Feedback on this step: <STEP>Add the costs together: $13.50 + $1.50 = $15.50.</STEP>"
                         )
                     },
                     {
                         "role": "assistant",
                         "content": (
-                            "Feedback: Critical calculation error detected. The correct sum of $13.50 and $1.50 is $15.00, not $15.50. "
-                            "This miscalculation inflates the total cost and affects the final answer."
+                            "Feedback: Critical calculation error detected. The correct sum of $13.50 and $1.50 is $15.00, not $15.50. This miscalculation inflates the total cost and affects the final answer.\n"
                         )
                     }
                 ],
@@ -251,17 +303,23 @@ Reasoning step-by-step:
                     {
                         "role": "system",
                         "content": (
-                            "You are a problem-solving expert detecting fundamental misinterpretations. Flag only:"
-                            "\n- Misidentification of core problem requirements"
-                            "\n- Incorrect assumptions changing problem meaning"
-                            "\n- Missing critical problem constraints"
-                            "\nIf detected, respond with: 'Feedback: Critical misinterpretation detected.' Then:"
-                            "1. Quote the misunderstood problem component"
-                            "2. Explain the distorted understanding"
-                            "3. Provide the accurate interpretation"
-                            "\nIgnore: Alternative valid interpretations or minor phrasing disagreements."
-                            "\nIf the step is correct and no critical issues are found, it's crucial to respond with: 'Feedback: No critical errors found.'"
-                            "\nIf you notice minor issues or nitpicks that don't significantly impact the solution, also respond with: 'Feedback: No critical errors found.'"
+                            "You are a problem-solving expert evaluating problem interpretation accuracy. Your task is to determine whether each step correctly understands and addresses its specific subtask within the larger problem."
+                            "Your primary goal is to determine if the step accurately interprets and solves the subtask it is attempting to address."
+                            "IMPORTANT: You are evaluating only one step at a time within a larger reasoning path."
+                            "Later steps may provide additional context or complete earlier subtasks; this is normal in multi-step solutions."
+                            "Focus solely on whether this specific step correctly interprets and addresses its own subgoal."
+                            "Specifically check for:"
+                            "\n- Misidentification of the specific subtask the step is attempting to address"
+                            "\n- Incorrect assumptions that contradict the problem statement"
+                            "\n- Application of wrong formulas or methods for the specific calculation"
+                            "\n If the step correctly interprets what it's attempting to calculate, start with: 'Feedback: No critical errors found.' Then briefly explain how the step correctly addresses its specific subtask within the solution process."
+                            "\n If detected, start with: 'Feedback: Critical misinterpretation detected.' Then:"
+                            "1. Quote the misunderstood problem component "
+                            "2. Explain the distorted understanding "
+                            "3. Provide the accurate interpretation "
+                            "\n Ignore: Alternative valid interpretations or minor phrasing disagreements."
+                            "\n A step after the current step is given as a forward-looking step for context only. Focus your feedback solely on the specifically designated step."
+                            "\n It's crucial to avoid false positives. Only flag a step as containing misinterpretation when you are 100% certain that it fundamentally misunderstands what it's trying to calculate. Do not flag steps simply because they address only part of the overall problem - this is normal in step-by-step reasoning."
                         )
                     },
                     {
@@ -270,18 +328,17 @@ Reasoning step-by-step:
                             "Here is the current reasoning path for the problem:\n\n"
                             "Problem: A pizza originally costs $20 and is offered at a 25% discount. What is the sale price?\n\n"
                             "Steps:\n"
-                            "Step 1: Identify the original price, which is $20.\n"
-                            "Step 2: Calculate the discount amount as 25% of $20: 0.25 × $20 = $5.\n"
-                            "Step 3: Add the discount to the original price: $20 + $5 = $25.\n"
-                            "Step 4: Conclude that the sale price is $25.\n"
-                            "Feedback on this step: Step 3: Add the discount to the original price: $20 + $5 = $25.\n"
+                            "<STEP>Identify the original price, which is $20.</STEP>"
+                            "<STEP>Calculate the discount amount as 25% of $20: 0.25 x $20 = $5.</STEP>"
+                            "<STEP>Add the discount to the original price: $20 + $5 = $25.</STEP>"
+                            "<STEP>Conclude that the sale price is $25.</STEP>"
+                            "Feedback on this step: <STEP>Add the discount to the original price: $20 + $5 = $25.</STEP>"
                         )
                     },
                     {
                         "role": "assistant",
                         "content": (
-                            "Feedback: Critical misinterpretation detected. The step incorrectly adds the discount to the original price instead of subtracting it. "
-                            "A discount reduces the price, so the calculation should be $20 - $5 = $15."
+                            "Feedback: Critical misinterpretation detected. The step incorrectly adds the discount to the original price instead of subtracting it. A discount reduces the price, so the calculation should be $20 - $5 = $15.\n"
                         )
                     },
                     {
@@ -290,33 +347,36 @@ Reasoning step-by-step:
                             "Here is the current reasoning path for the problem:\n\n"
                             "Problem: John has 5 apples and gives 2 to Mary. How many apples does he have left?\n\n"
                             "Steps:\n"
-                            "Step 1: Start with John's initial number of apples, which is 5.\n"
-                            "Step 2: Determine that John gives away 2 apples to Mary.\n"
-                            "Step 3: Subtract the number of apples given away from the initial amount: 5 - 2 = 3.\n"
-                            "Step 4: Conclude that John has 3 apples remaining.\n"
-                            "Feedback on this step: Step 3: Subtract the number of apples given away from the initial amount: 5 - 2 = 3.\n"
+                            "<STEP>Start with John's initial number of apples, which is 5.</STEP>"
+                            "<STEP>Determine that John gives away 2 apples to Mary.</STEP>"
+                            "<STEP>Subtract the number of apples given away from the initial amount: 5 - 2 = 3.</STEP>"
+                            "<STEP>Conclude that John has 3 apples remaining.</STEP>"
+                            "Feedback on this step: <STEP>Subtract the number of apples given away from the initial amount: 5 - 2 = 3.</STEP>"
                         )
                     },
                     {
                         "role": "assistant",
-                        "content": "Feedback: No critical errors found."
+                        "content": (
+                            "Feedback: No critical errors found. The reasoning correctly subtracts the apples given away, resulting in the accurate count.\n"
+                        )
                     }
                 ],
                 [  # Section 3: Logical Consistency Between Steps
                     {
                         "role": "system",
                         "content": (
-                            "You are a logic expert identifying solution-breaking inconsistencies. Flag only:"
+                            "You are a logic expert evaluating step-by-step reasoning coherence. Your task is to determine whether each step follows logically from previous steps or contains inconsistencies. Specifically check for:"
                             "\n- Contradictions with previous validated steps"
                             "\n- Invalid logical leaps (missing necessary intermediate steps)"
                             "\n- Violations of mathematical proof principles"
-                            "\nIf found, respond with: 'Feedback: Critical inconsistency detected.' Then:"
+                            "\n If the step is logically consistent, start with: 'Feedback: No critical errors found.' Then briefly explain how the step builds properly on previous steps and maintains logical coherence in the solution process."
+                            "\nIf found, start with: 'Feedback: Critical inconsistency detected.' Then:"
                             "1. Identify the exact logical fracture point"
                             "2. Show the chain break using previous steps"
                             "3. Provide the minimum correction needed"
-                            "\nIgnore: Stylistic variations in reasoning."
-                            "\nIf the step is correct and no critical issues are found, it's crucial to respond with: 'Feedback: No critical errors found.'"
-                            "\nIf you notice minor issues or nitpicks that don't significantly impact the solution, also respond with: 'Feedback: No critical errors found.'"
+                            "\n Ignore: Stylistic variations in reasoning."
+                            "\n A step after the current step is given as a forward-looking step for context only. Focus your feedback solely on the specifically designated step."
+                            "\n It's crucial to avoid false positives. Only flag a step as containing inconsistencies when you are 100% certain. Stylistic variations in reasoning are not errors. For any minor issues or doubts, default to 'Feedback: No critical errors found.'"
                         )
                     },
                     {
@@ -325,19 +385,18 @@ Reasoning step-by-step:
                             "Here is the current reasoning path for the problem:\n\n"
                             "Problem: Calculate the area and perimeter of a rectangle with dimensions 8 cm by 5 cm.\n\n"
                             "Steps:\n"
-                            "Step 1: Identify the rectangle's dimensions as 8 cm length and 5 cm width.\n"
-                            "Step 2: Calculate the area using the formula: Area = length × width.\n"
-                            "Step 3: Substitute the values to find the area: 8 cm × 5 cm = 40 square cm.\n"
-                            "Step 4: For the perimeter, incorrectly add the dimensions: 8 cm + 5 cm = 13 cm as the perimeter.\n"
-                            "Step 5: Conclude that the area is 40 square cm and the perimeter is 13 cm.\n"
-                            "Feedback on this step: Step 4: For the perimeter, incorrectly add the dimensions: 8 cm + 5 cm = 13 cm as the perimeter.\n"
+                            "<STEP>Identify the rectangle's dimensions as 8 cm length and 5 cm width.</STEP>"
+                            "<STEP>Calculate the area using the formula: Area = length x width.</STEP>"
+                            "<STEP>Substitute the values to find the area: 8 cm x 5 cm = 40 square cm.</STEP>"
+                            "<STEP>For the perimeter, incorrectly add the dimensions: 8 cm + 5 cm = 13 cm as the perimeter.</STEP>"
+                            "<STEP>Conclude that the area is 40 square cm and the perimeter is 13 cm.</STEP>"
+                            "Feedback on this step: <STEP>For the perimeter, incorrectly add the dimensions: 8 cm + 5 cm = 13 cm as the perimeter.</STEP>"
                         )
                     },
                     {
                         "role": "assistant",
                         "content": (
-                            "Feedback: Critical inconsistency detected. The perimeter of a rectangle is calculated by adding twice the length and twice the width (2l + 2w), "
-                            "not by simply adding the dimensions. The correct perimeter is 2 × 8 + 2 × 5 = 16 + 10 = 26 cm, not 13 cm."
+                            "Feedback: Critical inconsistency detected. The perimeter of a rectangle is calculated by adding twice the length and twice the width (2l + 2w), not by simply adding the dimensions. The correct perimeter is 2 x 8 + 2 x 5 = 16 + 10 = 26 cm, not 13 cm.\n"
                         )
                     },
                     {
@@ -346,24 +405,26 @@ Reasoning step-by-step:
                             "Here is the current reasoning path for the problem:\n\n"
                             "Problem: Calculate the area of a triangle with base 10 cm and height 8 cm.\n\n"
                             "Steps:\n"
-                            "Step 1: Identify the triangle's base as 10 cm and height as 8 cm.\n"
-                            "Step 2: Recall the formula for the area of a triangle: Area = (1/2) × base × height.\n"
-                            "Step 3: Substitute the values into the formula: Area = (1/2) × 10 cm × 8 cm.\n"
-                            "Step 4: Calculate: Area = (1/2) × 80 square cm = 40 square cm.\n"
-                            "Step 5: Conclude that the triangle's area is 40 square cm.\n"
-                            "Feedback on this step: Step 4: Calculate: Area = (1/2) × 80 square cm = 40 square cm.\n"
+                            "<STEP>Identify the triangle's base as 10 cm and height as 8 cm.</STEP>"
+                            "<STEP>Recall the formula for the area of a triangle: Area = (1/2) x base x height.</STEP>"
+                            "<STEP>Substitute the values into the formula: Area = (1/2) x 10 cm x 8 cm.</STEP>"
+                            "<STEP>Calculate: Area = (1/2) x 80 square cm = 40 square cm.</STEP>"
+                            "<STEP>Conclude that the triangle's area is 40 square cm.</STEP>"
+                            "Feedback on this step: <STEP>Calculate: Area = (1/2) x 80 square cm = 40 square cm.</STEP>"
                         )
                     },
                     {
                         "role": "assistant",
-                        "content": "Feedback: No critical errors found."
+                        "content": (
+                            "Feedback: No critical errors found. The area calculation for the triangle correctly applies the formula.\n"
+                        )
                     }
                 ]
             ]
 
-            feedback_responses = []
+            feedback_responses = {0: [], 1: [], 2: []}  # Dictionary with keys for each role
 
-            for prompt in feedback_prompts:
+            for i, prompt in enumerate(feedback_prompts):
                 feedback_prompt = prompt + [
                     {
                         "role": "user",
@@ -379,13 +440,48 @@ Reasoning step-by-step:
 
                 tokenized_chat = self.tokenize_chat(feedback_prompt)
                 output = self.generate_output(tokenized_chat)
+                # print(self.decode_output(output, False).split("Feedback:")[-1].strip(), "feedback", i)
                 decoded_feedback = self.decode_output(output, False).split("Feedback:")[-1].strip().split("<|eot_id|>")[0].strip()
+
+                feedback_count += 1
 
                 if "no critical errors found" in decoded_feedback.lower():
                     continue
-                feedback_responses.append(decoded_feedback)
-            
-            if feedback_responses == []:
+                
+                # feedback_reassess = prompt + [
+                #     {
+                #         "role": "user",
+                #         "content": (
+                #             f"Here is the current reasoning path for the problem:\n\n"
+                #             f"Problem: {problem}\n\n"
+                #             f"Steps:\n" + "\n".join(f"<STEP>{step}</STEP>" for step in current_step) +
+                #             f"Feedback on this step: <STEP>{current_step[step_index - 1]}</STEP>\n"
+                #         )
+                #     },
+                #     {"role": "assistant", "content": f"Feedback: {decoded_feedback}"},
+                #     {"role": "user", "content": (
+                #         "Are you certain this constitutes a critical error? Please reassess and confirm whether this is indeed a critical issue or if there may have been an overinterpretation."
+                #         "Answer with '### Yes, it constitutes a critical error.' or '### No, it does not constitue a critical error'."
+                #     )},
+                #     {"role": "assistant", "content": "###"}
+                # ]
+
+                # tokenized_feedback_reassess = self.tokenize_chat(feedback_reassess)
+                # feedback_reassess_output = self.generate_output(tokenized_feedback_reassess)
+                # print(self.decode_output(feedback_reassess_output, False))
+                # decoded_feedback_reassess = self.decode_output(feedback_reassess_output, False).split("###")[-1].strip()
+                # if "no" in decoded_feedback_reassess.lower():
+                #     continue
+
+                # Store feedback in the appropriate category in the dictionary
+                major_feedback_count += 1
+                feedback_responses[i].append(decoded_feedback)
+                # print("feedback", i)
+
+            # print(feedback_responses)
+            # print(sum(len(v) for v in feedback_responses.values()))  # Total count of feedback responses
+
+            if all(len(v) == 0 for v in feedback_responses.values()):  # Check if all lists in dictionary are empty
                 pass_count += 1
                 step_index += 1
                 continue
@@ -430,31 +526,34 @@ Reasoning step-by-step:
             valid_feedbacks = []  # to store only the approved feedback responses
 
             # For every feedback response, run it through each verification system prompt.
-            for i, fb in enumerate(feedback_responses.copy()):
-                feedback_verification_prompt = [
-                    verification_system_prompts[i],
-                    {
-                        "role": "user",
-                        "content": (
-                            "Now verify the feedback provided below."
-                            f"Problem: {problem}\n\n"
-                            f"Previously validated steps: " + "\n".join(f"<STEP>{step}</STEP>" for step in current_step[:step_index - 1]) + "\n\n"
-                            f"Designated Step Under Review: <STEP>{current_step[step_index - 1]}</STEP>\n\n"
-                            f"Forward-looking Step: <STEP>{current_step[-1]}</STEP>\n\n"
-                            f"Feedback Provided: {fb}\n\n"
-                            "Evaluate the feedback and respond as instructed."
-                        )
-                    },
-                    {
-                    "role": "assistant",
-                    "content": "The feedback is"
-                    }
-                ]
-                tokenized_verification = self.tokenize_chat(feedback_verification_prompt)
-                verification_output = self.generate_output(tokenized_verification)
-                verification_result = self.decode_output(verification_output, False).split("Evaluate the feedback and respond as instructed.")[-1].strip()
-                if "feedback is valid" in verification_result.lower():
-                    valid_feedbacks.append(fb.split("<|eot_id|>")[0])
+            # For each role that has feedback, verify with the appropriate system prompt
+            for role_idx, fb_list in feedback_responses.items():
+                for fb in fb_list:
+                    feedback_verification_prompt = [
+                        verification_system_prompts[role_idx],  # Use appropriate system prompt for this role
+                        {
+                            "role": "user",
+                            "content": (
+                                "Now verify the feedback provided below."
+                                f"Problem: {problem}\n\n"
+                                f"Previously validated steps: " + "\n".join(f"<STEP>{step}</STEP>" for step in current_step[:step_index - 1]) + "\n\n"
+                                f"Designated Step Under Review: <STEP>{current_step[step_index - 1]}</STEP>\n\n"
+                                f"Forward-looking Step: <STEP>{current_step[-1]}</STEP>\n\n"
+                                f"Feedback Provided: {fb}\n\n"
+                                "Evaluate the feedback and respond as instructed."
+                            )
+                        },
+                        {
+                            "role": "assistant", 
+                            "content": "The feedback is"
+                        }
+                    ]
+                    tokenized_verification = self.tokenize_chat(feedback_verification_prompt)
+                    verification_output = self.generate_output(tokenized_verification)
+                    verification_result = self.decode_output(verification_output, False).split("Evaluate the feedback and respond as instructed.")[-1].strip()
+                    if "feedback is valid" in verification_result.lower():
+                        valid_feedbacks.append(fb.split("<|eot_id|>")[0])
+                        valid_feedback_count += 1
 
 
             # Check if final_feedback indicates no additional changes required
@@ -535,7 +634,7 @@ Reasoning step-by-step:
 
             continued_result = self.decode_output(continuation_output, False).split("Reasoning step-by-step:")[-1]
             continued_steps = re.findall(r"<STEP>(.*?)</STEP>", continued_result, re.DOTALL)
-            continued_answer = continued_result.split("<ANSWER>")[-1].split("</ANSWER>")[0].strip()
+            continued_answer = self.extract_or_request_answer(continued_result, problem)
             result = "\n".join(f"<STEP>{step}</STEP>" for step in continued_steps) + f"<ANSWER>{continued_answer}</ANSWER>"
 
             # print("continued answer confidence : ", outputs_confidence, ", Answer :", continued_answer)
@@ -557,35 +656,38 @@ Reasoning step-by-step:
         ]
 
         # print(cleaned_result_pairs)
-
-        # Helper function to clean text (remove newline and carriage return characters)
-        def clean_text(val):
-            if isinstance(val, str):
-                return val.replace("\n", " ").replace("\r", " ")
-            return val
-
-        # Helper function to flatten a dictionary into a "key: value" string.
-        def flatten_dict(d):
-            # Sort keys for consistency
-            return ", ".join(f"{k}: {clean_text(v)}" for k, v in sorted(d.items()))
         
-        # Flatten each dictionary in the list.
-        flattened_data = [flatten_dict(d) for d in cleaned_result_pairs]
+        cleaned_result_pairs = [
+            {
+                key: (value.replace("\n", " ") if isinstance(value, str) else value)
+                for key, value in candidate.items()
+            }
+            for candidate in result_pairs
+        ]
 
-        # The entire list will be saved as one row in the CSV file.
-        # The columns will be named "0", "1", "2", ... corresponding to each dictionary.
-        num_columns = len(flattened_data)
-        header = [str(i) for i in range(num_columns)]
+        # Combine your list of single-key dicts into one row dict
+        row = {}
+        for d in result_pairs:
+            row.update(d)
 
-        # Write to CSV file in append mode.
-        log_file = "results_divide_feedback.csv"
+        # Clean newlines from string values
+        row = {k: (v.replace('\n', ' ') if isinstance(v, str) else v) for k, v in row.items()}
+
+        # Create new headers: '0', '1', '2', ...
+        header = [str(i) for i in range(len(row))]
+
+        # Prepare the row values in the same order as headers
+        row_values = list(row.values())
+        row_for_csv = {str(i): row_values[i] for i in range(len(row_values))}
+
+        log_file = "2results_feedback.csv"
         write_header = not os.path.exists(log_file) or os.stat(log_file).st_size == 0
 
         with open(log_file, "a", newline="", encoding="utf-8") as csvfile:
-            writer = csv.writer(csvfile)
+            writer = csv.DictWriter(csvfile, fieldnames=header)
             if write_header:
-                writer.writerow(header)
-            writer.writerow(flattened_data)
+                writer.writeheader()
+            writer.writerow(row_for_csv)
 
         # Step 2: Extract only the elements that contain the "answer" field
         processed_result = [
@@ -593,7 +695,7 @@ Reasoning step-by-step:
         ]
 
         best_result = processed_result[-1]  # The last element is the best result
-        return [intial_answer, best_result['answer'], reject_count, len(steps) - pass_count, len(steps)] # reject된 피드백의 개수, valid한 피드백의 개수, 전체 step의 개수
+        return [initial_answer, best_result['answer'], valid_feedback_count, major_feedback_count, feedback_count] # valid한 피드백의 개수, major한 피드백의 개수, 전체 피드백의 개수
 
 
 # Usage Example
@@ -664,12 +766,103 @@ Finally, calculate how much more Betty needs by subtracting the total money she 
       }
     ]
 
+    few_shot_examples_MATH500 = [
+        {
+            "role": "system",
+            "content": "You are a helpful assistant that solves math problems step by step. "
+            "For every reasoning step, enclose your output exactly within the <STEP> and </STEP> tags. "
+            "Your final answer value must be provided enclosed within the <ANSWER> and </ANSWER> tags. "
+            "IMPORTANT: Do not include any additional text outside these tags."
+        },
+        {
+            "role": "user",
+            "content": ("Solve this math problem step by step. Problem : \n"
+                        "Compute [1/cos^2(10°) + 1/sin^2(20°) + 1/sin^2(40°)].")
+        },
+        {
+        "role": "assistant",
+        "content": """
+Reasoning step-by-step:
+<STEP>
+We wish to simplify S = 1/cos²(10°) + 1/sin²(20°) + 1/sin²(40°).
+Notice that cos(10°) = sin(80°) (since sin(90° - θ) = cos(θ)). Thus, we can rewrite the first term as:
+1/cos²(10°) = 1/sin²(80°).
+</STEP>
+<STEP>
+Now the sum becomes:
+S = 1/sin²(20°) + 1/sin²(40°) + 1/sin²(80°).
+</STEP>
+<STEP>
+Using the identity csc²(θ) = 1 + cot²(θ), we can rewrite each term:
+S = [1 + cot²(20°)] + [1 + cot²(40°)] + [1 + cot²(80°)].
+This simplifies to:
+S = 3 + (cot²(20°) + cot²(40°) + cot²(80°)).
+</STEP>
+<STEP>
+A numerical check or derivation shows that cot²(20°) + cot²(40°) + cot²(80°) = 9.
+</STEP>
+<STEP>
+Finally, adding these values together gives:
+S = 3 + 9 = 12.
+</STEP>
+<ANSWER>
+12
+</ANSWER>
+"""
+        },
+        {
+            "role": "user",
+            "content": ("Solve this math problem step by step. Problem : \n"
+                        "Evaluate the definite integral ∫[0 to 1] (3x^2 + 2x) dx.")
+        },
+        {
+        "role": "assistant",
+        "content": """
+Reasoning step-by-step:
+<STEP>
+The given integral is ∫[0 to 1] (3x² + 2x) dx. We can split this into two separate integrals:
+∫[0 to 1] (3x² dx) + ∫[0 to 1] (2x dx).
+</STEP>
+<STEP>
+The integral of x^n is given by x^(n+1)/(n+1). Using this rule, we calculate each term:
+∫[0 to 1] (3x² dx) = [3 * x³ / 3] from 0 to 1 = [x³] from 0 to 1.
+</STEP>
+<STEP>
+For the second term:
+∫[0 to 1] (2x dx) = [2 * x² / 2] from 0 to 1 = [x²] from 0 to 1.
+</STEP>
+<STEP>
+Now evaluate both terms at the bounds of integration. For the first term, x³ from 0 to 1:
+At x=1, x³ = 1³ = 1.
+At x=0, x³ = 0³ = 0.
+Thus, the first term evaluates to: 1 - 0 = 1.
+</STEP>
+<STEP>
+For the second term, x² from 0 to 1:
+At x=1, x² = 1² = 1.
+At x=0, x² = 0² = 0.
+Thus, the second term evaluates to: 1 - 0 = 1.
+</STEP>
+<STEP>
+Adding both terms together gives:
+Total integral value = (First term) + (Second term) = 1 + 1 = 2.
+</STEP>
+<ANSWER>
+2
+</ANSWER>
+"""
+        }
+    ]
+
+
     # Answer = 70,000, 80000 * 2.5 - 80000 - 50000
     problem = "Josh decides to try flipping a house.  He buys a house for $80,000 and then puts in $50,000 in repairs.  This increased the value of the house by 150%.  How much profit did he make?"
     # Answer 2 = 31, 25 + 5+ 1
     problem2 = "Ram uses a lot of pens. He discovered that he can save money by mixing the ink from five empty pens to make one full pen. If he buys 25 pens and then uses them to make new pens when the ink runs low, how many total pens does he get to have?"
     # Answer 3 = 60
     problem3 = "Rita hand-picks Junebugs off of her plants every summer.  On Monday, she removed 39 Junebugs.  On both Tuesday and Wednesday, she removed twice as many Junebugs as she did on Monday.  Thursday she removed 48 and on Friday she removed 57.  What is the average number of Junebugs that she removes per day?"
-    solution = solver.solve_problem(problem2, few_shot_examples_GSM8K)
+    # Answer 4 = 80
+    problem4 = "How many positive whole-number divisors does 196 have?"
+    solution = solver.solve_problem(problem4, few_shot_examples_MATH500)
     print(solution)
 
